@@ -1,0 +1,13 @@
+# Python Dependencies
+
+# Install with: pip install -r requirements.txt
+
+jax>=0.4.0
+jaxlib>=0.4.0
+equinox>=0.11.0
+numpy>=1.24.0
+pyqt6>=6.4.0
+pyqtgraph>=0.13.0
+optax>=0.1.0
+pillow>=10.0.0
+matplotlib>=3.5.0
