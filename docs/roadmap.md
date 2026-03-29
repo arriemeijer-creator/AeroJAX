@@ -10,7 +10,7 @@ Let me be upfront about what's working, what's not, and what's just ideas right 
 
 ---
 
-## ✅ Done & Working
+## Done & Working
 
 The baseline solver is complete and validated. This means:
 
@@ -95,7 +95,7 @@ Not started yet. Waiting on the pressure solver to work first.
 
 ---
 
-## 📋 Planned (But Not Started)
+## Planned (But Not Started)
 
 ### Coarse-Scale / Temporal Networks
 Long-range corrections using transformers or convLSTM. The design doc talks about this. Realistically, this is months away.
