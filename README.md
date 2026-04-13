@@ -4,9 +4,13 @@ A real-time JAX-based CFD framework for interactive incompressible flow simulati
 
 > Differentiable CFD-ML is a high-performance CFD framework for real-time incompressible flow simulation, live diagnostics, and rapid synthetic data generation for CFD–ML research.
 
-[Demo Video: NACA_Airfoil.mp4](NACA_Airfoil.mp4)
+**Demo Video:**
 
-[GUI Screenshot: GUI.png](GUI.png)
+[Watch Demo Video](NACA_Airfoil.mp4)
+
+**GUI Screenshot:**
+
+![GUI Screenshot](GUI.png)
 
 **Key Dependencies:**
 - [JAX](https://jax.readthedocs.io/) - Differentiable numerical computing
