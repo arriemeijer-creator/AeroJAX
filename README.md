@@ -6,7 +6,7 @@ A real-time JAX-based CFD framework for interactive incompressible flow simulati
 
 **Demo Video:**
 
-[Watch Demo Video](NACA_Airfoil.mp4)
+![Demo Animation](NACA_Airfoil.gif)
 
 **GUI Screenshot:**
 
