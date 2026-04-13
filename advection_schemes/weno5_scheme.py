@@ -3,8 +3,10 @@ import jax.numpy as jnp
 from typing import Tuple
 
 @jax.jit
-def weno5_step(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float, dx: float, dy: float, mask: jnp.ndarray, Cs: float = 0.17, weno_epsilon: float = 1e-6) -> Tuple[jnp.ndarray, jnp.ndarray]:
+def weno5_step(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float, dx: float, dy: float, mask: jnp.ndarray, weno_epsilon: float = 1e-6) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """5th order WENO scheme for shock-capturing"""
+    print(f"[DEBUG] WENO5 scheme called with dt={dt}, epsilon={weno_epsilon}")
+    
     def weno5_reconstruction(f: jnp.ndarray, axis: int, direction: int) -> jnp.ndarray:
         # Simplified WENO5 reconstruction
         if axis == 0:  # x-direction
@@ -92,33 +94,8 @@ def weno5_step(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float, dx: float, 
     diff_x = nu * laplacian(u, dx, dy)
     diff_y = nu * laplacian(v, dx, dy)
     
-    # SGS model (simplified)
-    def sgs_stress_divergence(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, Cs: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        du_dx = grad_x(u, dx)
-        du_dy = grad_y(u, dy)
-        dv_dx = grad_x(v, dx)
-        dv_dy = grad_y(v, dy)
-        
-        Sxx = du_dx
-        Syy = dv_dy
-        Sxy = 0.5 * (du_dy + dv_dx)
-        
-        mag_S = jnp.sqrt(2.0 * (Sxx**2 + Syy**2 + 2.0 * Sxy**2))
-        Delta = jnp.sqrt(dx * dy)
-        nu_sgs = (Cs * Delta)**2 * mag_S
-        
-        tau_xx = -2.0 * nu_sgs * Sxx
-        tau_yy = -2.0 * nu_sgs * Syy
-        tau_xy = -2.0 * nu_sgs * Sxy
-        
-        div_tau_x = grad_x(tau_xx, dx) + grad_y(tau_xy, dy)
-        div_tau_y = grad_x(tau_xy, dx) + grad_y(tau_yy, dy)
-        
-        return div_tau_x, div_tau_y
-    
-    div_tau_x, div_tau_y = sgs_stress_divergence(u, v, dx, dy, Cs)
-    
-    u_star = u + dt * (-adv_x + diff_x + div_tau_x)
-    v_star = v + dt * (-adv_y + diff_y + div_tau_y)
+    # Update velocities
+    u_star = u + dt * (-adv_x + diff_x)
+    v_star = v + dt * (-adv_y + diff_y)
     
     return u_star, v_star

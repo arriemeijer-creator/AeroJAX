@@ -2,21 +2,18 @@ import jax
 import jax.numpy as jnp
 from typing import Tuple
 
-@jax.jit
-def poisson_multigrid(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
-                    dx: float, dy: float, dt: float = 0.001, levels: int = 4, v_cycles: int = 2) -> jnp.ndarray:
-    """Geometric Multigrid solver with safe grid handling"""
-    def grad_x(f: jnp.ndarray, dx: float) -> jnp.ndarray:
-        return (jnp.roll(f, -1, axis=0) - jnp.roll(f, 1, axis=0)) / (2.0 * dx)
-    
-    def grad_y(f: jnp.ndarray, dy: float) -> jnp.ndarray:
-        return (jnp.roll(f, -1, axis=1) - jnp.roll(f, 1, axis=1)) / (2.0 * dy)
-    
-    def divergence(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float) -> jnp.ndarray:
-        return grad_x(u, dx) + grad_y(v, dy)
-    
-    nx, ny = u.shape
-    b = divergence(u, v, dx, dy) / dt
+@jax.jit(static_argnames=('flow_type',))
+def poisson_multigrid(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float, levels: int = 4, v_cycles: int = 2, flow_type: str = 'von_karman') -> jnp.ndarray:
+    """Geometric Multigrid solver with non-periodic boundary conditions"""
+    nx, ny = rhs.shape
+    b = rhs  # rhs should already be divergence/dt computed by caller
+
+    # Zero out RHS at Dirichlet boundaries based on flow type
+    if flow_type == 'von_karman':
+        # Inlet/outlet are Dirichlet BCs for von Karman
+        b = b.at[0, :].set(0.0)
+        b = b.at[-1, :].set(0.0)
+    # For LDC, no Dirichlet boundaries (closed cavity)
     
     # Check if grid is suitable for multigrid (must be divisible by 2^levels)
     max_levels = 1
@@ -27,8 +24,8 @@ def poisson_multigrid(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
         max_levels += 1
     
     if max_levels < 2:
-        # Grid not suitable for multigrid, fall back to simple smoothing
-        return simple_gauss_seidel(b, dx, dy, max_iter=50)
+        # Grid not suitable for multigrid - raise error instead of fallback
+        raise ValueError(f"Grid dimensions ({nx}, {ny}) not suitable for multigrid with {levels} levels. Grid must be divisible by 2^{levels}")
     
     def restrict(fine: jnp.ndarray) -> jnp.ndarray:
         """Restriction (full weighting) with safe indexing"""
@@ -81,18 +78,43 @@ def poisson_multigrid(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
         return fine
     
     def smooth(p: jnp.ndarray, b: jnp.ndarray, nu: int = 2) -> jnp.ndarray:
-        """Gauss-Seidel smoother - XLA optimized"""
+        """Gauss-Seidel smoother with non-periodic boundary conditions"""
         def smooth_step(p_state, i):
             p = p_state
-            return (jnp.roll(p, 1, axis=0) + jnp.roll(p, -1, axis=0) +
-                    jnp.roll(p, 1, axis=1) + jnp.roll(p, -1, axis=1) - dx**2 * b) / 4.0, None
-        
+            # Use ghost cells for non-periodic derivatives
+            p_padded = jnp.pad(p, ((1, 1), (1, 1)), mode='edge')
+            ax = 1.0 / (dx * dx)
+            ay = 1.0 / (dy * dy)
+            p_new = (ax * (p_padded[2:, 1:-1] + p_padded[:-2, 1:-1]) +
+                     ay * (p_padded[1:-1, 2:] + p_padded[1:-1, :-2]) - b) / (2.0 * (ax + ay))
+            return p_new, None
+
         p_final, _ = jax.lax.scan(smooth_step, p, jnp.arange(nu))
         return p_final
-    
+
     def apply_laplacian(p: jnp.ndarray) -> jnp.ndarray:
-        return (jnp.roll(p, 1, axis=0) + jnp.roll(p, -1, axis=0) +
-                jnp.roll(p, 1, axis=1) + jnp.roll(p, -1, axis=1) - 4 * p) / dx**2
+        """Apply discrete Laplacian with flow-specific boundary conditions"""
+        # Use ghost cells for non-periodic derivatives
+        p_padded = jnp.pad(p, ((1, 1), (1, 1)), mode='edge')
+        ax = 1.0 / (dx * dx)
+        ay = 1.0 / (dy * dy)
+        laplacian = ax * (p_padded[2:, 1:-1] + p_padded[:-2, 1:-1] - 2 * p) + \
+                     ay * (p_padded[1:-1, 2:] + p_padded[1:-1, :-2] - 2 * p)
+
+        # Apply boundary conditions based on flow type
+        if flow_type == 'von_karman':
+            # Inlet (left): Dirichlet BC (p = 0)
+            laplacian = laplacian.at[0, :].set(0.0)
+            # Outlet (right): Dirichlet BC (p = 0)
+            laplacian = laplacian.at[-1, :].set(0.0)
+            # Top/Bottom walls: Neumann BC (∂p/∂y = 0) - handled by edge padding
+        elif flow_type == 'lid_driven_cavity':
+            # All boundaries: Neumann BC (∂p/∂n = 0) for closed cavity
+            # Edge padding already handles Neumann BCs
+            pass
+        # For Taylor-Green, use periodic (handled by caller)
+
+        return laplacian
     
     # V-cycle implementation with safe levels
     def v_cycle(p: jnp.ndarray, b: jnp.ndarray, level: int) -> jnp.ndarray:
@@ -128,14 +150,17 @@ def poisson_multigrid(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
     return p_final
 
 def simple_gauss_seidel(b: jnp.ndarray, dx: float, dy: float, max_iter: int = 50) -> jnp.ndarray:
-    """Simple Gauss-Seidel fallback for incompatible grids - XLA optimized"""
+    """Simple Gauss-Seidel fallback with non-periodic boundary conditions"""
     nx, ny = b.shape
     p = jnp.zeros((nx, ny))
-    
+
     def smooth_step(p_state, i):
         p = p_state
-        return (jnp.roll(p, 1, axis=0) + jnp.roll(p, -1, axis=0) +
-                jnp.roll(p, 1, axis=1) + jnp.roll(p, -1, axis=1) - dx**2 * b) / 4.0, None
-    
+        # Use ghost cells for non-periodic derivatives
+        p_padded = jnp.pad(p, ((1, 1), (1, 1)), mode='edge')
+        p_new = (p_padded[2:, 1:-1] + p_padded[:-2, 1:-1] +
+                 p_padded[1:-1, 2:] + p_padded[1:-1, :-2] - dx**2 * b) / 4.0
+        return p_new, None
+
     p_final, _ = jax.lax.scan(smooth_step, p, jnp.arange(max_iter))
     return p_final

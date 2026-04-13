@@ -1,0 +1,929 @@
+"""
+UI Components for Baseline Navier-Stokes Viewer
+Separates UI creation and management from main viewer logic
+"""
+
+import numpy as np
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QLineEdit, QSpinBox, QComboBox, QDoubleSpinBox, QCheckBox, QSlider,
+    QGroupBox, QScrollArea, QFrame
+)
+import jax.numpy as jnp  # Import for real-time epsilon updates
+
+class ControlPanel(QWidget):
+    """Main control panel with top console and sidebar for advanced controls"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_viewer = parent  # Store reference to viewer for real-time updates
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the complete control panel UI: single vertical layout"""
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(10)
+
+        # === TOP CONSOLE (horizontal bar) ===
+        top_console = self._create_top_console()
+        main_layout.addWidget(top_console)
+
+        # === CONTROL GROUPS (vertical layout) ===
+        main_layout.addWidget(self._create_flow_grid_group())
+        main_layout.addWidget(self._create_cylinder_group())
+        main_layout.addWidget(self._create_obstacle_group())
+        main_layout.addWidget(self._create_numerical_group())
+        main_layout.addWidget(self._create_time_group())
+        main_layout.addWidget(self._create_visualization_group())
+        main_layout.addStretch()
+
+        self.setLayout(main_layout)
+
+    def _create_flow_grid_group(self):
+        """Combined group for flow type and grid size"""
+        group = QGroupBox("Flow & Grid")
+        layout = QVBoxLayout()
+        
+        # Flow type
+        flow_layout = QHBoxLayout()
+        flow_layout.addWidget(QLabel("Flow:"))
+        self.flow_combo = QComboBox()
+        self.flow_combo.addItems(["von_karman", "lid_driven_cavity", "taylor_green"])
+        self.flow_combo.setMaximumWidth(120)  # Increased from 100
+        flow_layout.addWidget(self.flow_combo)
+        flow_layout.addStretch()
+        layout.addLayout(flow_layout)
+
+        # Grid size
+        grid_layout = QHBoxLayout()
+        grid_layout.addWidget(QLabel("Grid:"))
+        self.grid_x_spinbox = QSpinBox()
+        self.grid_x_spinbox.setRange(64, 4096)
+        self.grid_x_spinbox.setValue(512)
+        self.grid_x_spinbox.setSingleStep(64)
+        self.grid_x_spinbox.setMinimumWidth(80)  # Increased width
+        grid_layout.addWidget(self.grid_x_spinbox)
+        
+        grid_layout.addWidget(QLabel("X:"))
+        self.grid_y_spinbox = QSpinBox()
+        self.grid_y_spinbox.setRange(32, 2048)
+        self.grid_y_spinbox.setValue(96)
+        self.grid_y_spinbox.setSingleStep(32)
+        self.grid_y_spinbox.setMinimumWidth(80)  # Increased width
+        grid_layout.addWidget(self.grid_y_spinbox)
+        
+        self.apply_grid_btn = QPushButton("Apply")
+        self.apply_grid_btn.setMinimumWidth(80)  # Increased width
+        grid_layout.addWidget(self.apply_grid_btn)
+        grid_layout.addStretch()
+        layout.addLayout(grid_layout)
+
+        group.setLayout(layout)
+        return group
+
+    def _create_top_console(self):
+        """Create the top horizontal toolbar with core controls"""
+        console = QFrame()
+        console.setFrameShape(QFrame.Shape.StyledPanel)
+        console.setStyleSheet("QFrame { background-color: #2d2d2d; border-radius: 4px; }")
+        layout = QHBoxLayout(console)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 5, 10, 5)
+
+        # --- Simulation buttons ---
+        self.start_btn = QPushButton("▶ Start")
+        self.pause_btn = QPushButton("⏸ Pause")
+        self.reset_btn = QPushButton("⟳ Reset")
+        for btn in (self.start_btn, self.pause_btn, self.reset_btn):
+            btn.setMinimumWidth(60)  # Reduced minimum width
+        layout.addWidget(self.start_btn)
+        layout.addWidget(self.pause_btn)
+        layout.addWidget(self.reset_btn)
+        layout.addWidget(QLabel("|"))
+
+        # --- Flow type ---
+        layout.addWidget(QLabel("Flow:"))
+        self.flow_combo = QComboBox()
+        self.flow_combo.addItems(["von_karman", "lid_driven_cavity", "taylor_green"])
+        self.flow_combo.setMaximumWidth(100)  # Reduced maximum width
+        layout.addWidget(self.flow_combo)
+
+        layout.addWidget(QLabel("|"))
+
+        # --- Grid size ---
+        layout.addWidget(QLabel("Grid:"))
+        self.grid_x_spinbox = QSpinBox()
+        self.grid_x_spinbox.setRange(64, 4096)
+        self.grid_x_spinbox.setValue(512)
+        self.grid_x_spinbox.setSingleStep(64)
+        self.grid_x_spinbox.setMaximumWidth(70)
+        layout.addWidget(self.grid_x_spinbox)
+
+        layout.addWidget(QLabel("×"))
+        self.grid_y_spinbox = QSpinBox()
+        self.grid_y_spinbox.setRange(32, 2048)
+        self.grid_y_spinbox.setValue(96)
+        self.grid_y_spinbox.setSingleStep(32)
+        self.grid_y_spinbox.setMaximumWidth(70)
+        layout.addWidget(self.grid_y_spinbox)
+
+        self.apply_grid_btn = QPushButton("Apply")
+        self.apply_grid_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_grid_btn)
+
+        layout.addWidget(QLabel("|"))
+
+        # --- Reynolds number ---
+        layout.addWidget(QLabel("Re:"))
+        self.re_input = QSpinBox()
+        self.re_input.setRange(10, 1000)
+        self.re_input.setSingleStep(10)
+        self.re_input.setValue(100)
+        self.re_input.setMaximumWidth(80)
+        layout.addWidget(self.re_input)
+        self.apply_re_btn = QPushButton("Apply")
+        self.apply_re_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_re_btn)
+
+        layout.addStretch()
+        return console
+
+    def _create_cylinder_group(self):
+        """Group for cylinder and mask (epsilon) controls"""
+        group = QGroupBox("Cylinder & Mask")
+        layout = QHBoxLayout()
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel("Radius:"))
+        self.cylinder_radius_spinbox = QDoubleSpinBox()
+        self.cylinder_radius_spinbox.setRange(0.05, 2.0)
+        self.cylinder_radius_spinbox.setValue(0.18)
+        self.cylinder_radius_spinbox.setDecimals(3)
+        self.cylinder_radius_spinbox.setSingleStep(0.01)
+        self.cylinder_radius_spinbox.setMaximumWidth(70)
+        layout.addWidget(self.cylinder_radius_spinbox)
+
+        self.apply_cylinder_btn = QPushButton("Apply")
+        self.apply_cylinder_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_cylinder_btn)
+
+        layout.addWidget(QLabel("|"))
+
+        layout.addWidget(QLabel("Mask ε:"))
+        self.epsilon_slider = QSlider(Qt.Orientation.Horizontal)
+        self.epsilon_slider.setRange(1, 50)
+        self.epsilon_slider.setValue(5)
+        self.epsilon_slider.setMaximumWidth(100)
+        layout.addWidget(self.epsilon_slider)
+
+        self.epsilon_label = QLabel("0.05")
+        self.epsilon_label.setMinimumWidth(35)
+        layout.addWidget(self.epsilon_label)
+
+        self.apply_epsilon_btn = QPushButton("Apply")
+        self.apply_epsilon_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_epsilon_btn)
+
+        self.epsilon_slider.valueChanged.connect(self._update_epsilon_label)
+
+        layout.addStretch()
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    def _create_numerical_group(self):
+        """Group for advection scheme, pressure solver, Jacobi iterations"""
+        group = QGroupBox("Numerical Schemes")
+        layout = QHBoxLayout()
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel("Advection:"))
+        self.scheme_combo = QComboBox()
+        self.scheme_combo.addItems(["rk3", "tvd", "weno5", "spectral"])
+        self.scheme_combo.setMaximumWidth(80)
+        layout.addWidget(self.scheme_combo)
+        self.apply_scheme_btn = QPushButton("Apply")
+        self.apply_scheme_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_scheme_btn)
+
+        layout.addWidget(QLabel("|"))
+
+        layout.addWidget(QLabel("Pressure:"))
+        self.pressure_combo = QComboBox()
+        self.pressure_combo.addItems(["fft", "cg", "multigrid"])
+        self.pressure_combo.setMaximumWidth(80)
+        layout.addWidget(self.pressure_combo)
+
+        # Jacobi iterations (hidden initially)
+        self.jacobi_iter_label = QLabel("Jacobi Iter:")
+        self.jacobi_iter_input = QSpinBox()
+        self.jacobi_iter_input.setRange(1, 1000)
+        self.jacobi_iter_input.setValue(50)
+        self.jacobi_iter_input.setSingleStep(10)
+        self.jacobi_iter_input.setMaximumWidth(60)
+        self.jacobi_iter_label.setVisible(False)
+        self.jacobi_iter_input.setVisible(False)
+        layout.addWidget(self.jacobi_iter_label)
+        layout.addWidget(self.jacobi_iter_input)
+
+        self.apply_pressure_btn = QPushButton("Apply")
+        self.apply_pressure_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_pressure_btn)
+
+        layout.addStretch()
+        group.setLayout(layout)
+        return group
+
+    def _create_obstacle_group(self):
+        """Group for obstacle selection (cylinder / NACA airfoil) and NACA parameters"""
+        print("DEBUG: ControlPanel._create_obstacle_group() called")
+        group = QGroupBox("Obstacle Configuration")
+        layout = QVBoxLayout()
+        
+        # Obstacle type selection
+        obstacle_layout = QHBoxLayout()
+        obstacle_layout.addWidget(QLabel("Type:"))
+        self.obstacle_type_combo = QComboBox()
+        self.obstacle_type_combo.addItems(["cylinder", "naca_airfoil"])
+        obstacle_layout.addWidget(self.obstacle_type_combo)
+        obstacle_layout.addStretch()
+        layout.addLayout(obstacle_layout)
+        
+        # NACA controls (hidden by default)
+        naca_layout = QHBoxLayout()
+        naca_layout.addWidget(QLabel("Chord:"))
+        self.naca_chord_spinbox = QDoubleSpinBox()
+        self.naca_chord_spinbox.setRange(0.1, 2.0)
+        self.naca_chord_spinbox.setValue(0.3)
+        self.naca_chord_spinbox.setDecimals(3)
+        self.naca_chord_spinbox.setSingleStep(0.01)
+        naca_layout.addWidget(self.naca_chord_spinbox)
+        
+        naca_layout.addWidget(QLabel("Angle:"))
+        self.naca_angle_spinbox = QDoubleSpinBox()
+        self.naca_angle_spinbox.setRange(-15.0, 15.0)
+        self.naca_angle_spinbox.setValue(5.0)
+        self.naca_angle_spinbox.setDecimals(1)
+        self.naca_angle_spinbox.setSingleStep(0.2)  # Changed from 0.5 to 0.2 degrees
+        naca_layout.addWidget(self.naca_angle_spinbox)
+        print(f"DEBUG: ControlPanel created naca_angle_spinbox at {id(self.naca_angle_spinbox)}")
+        
+        naca_layout.addWidget(QLabel("X:"))
+        self.naca_x_spinbox = QDoubleSpinBox()
+        self.naca_x_spinbox.setRange(0.1, 2.0)
+        self.naca_x_spinbox.setValue(0.3)
+        self.naca_x_spinbox.setDecimals(3)
+        self.naca_x_spinbox.setSingleStep(0.01)
+        naca_layout.addWidget(self.naca_x_spinbox)
+        
+        naca_layout.addWidget(QLabel("Y:"))
+        self.naca_y_spinbox = QDoubleSpinBox()
+        self.naca_y_spinbox.setRange(0.1, 2.0)
+        self.naca_y_spinbox.setValue(0.5)
+        self.naca_y_spinbox.setDecimals(3)
+        self.naca_y_spinbox.setSingleStep(0.01)
+        naca_layout.addWidget(self.naca_y_spinbox)
+        
+        naca_layout.addStretch()
+        layout.addLayout(naca_layout)
+        
+        # Hide NACA controls by default
+        self.naca_chord_spinbox.setVisible(False)
+        self.naca_angle_spinbox.setVisible(False)
+        self.naca_x_spinbox.setVisible(False)
+        self.naca_y_spinbox.setVisible(False)
+        
+        group.setLayout(layout)
+        return group
+
+    def _create_time_group(self):
+        """Group for time step controls and CFL"""
+        group = QGroupBox("Time Stepping")
+        layout = QHBoxLayout()
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel("dt:"))
+        self.dt_spinbox = QDoubleSpinBox()
+        self.dt_spinbox.setRange(0.0001, 0.01)
+        self.dt_spinbox.setDecimals(4)
+        self.dt_spinbox.setSingleStep(0.0001)
+        self.dt_spinbox.setMaximumWidth(90)
+        layout.addWidget(self.dt_spinbox)
+
+        self.apply_dt_btn = QPushButton("Apply")
+        self.apply_dt_btn.setMaximumWidth(60)
+        layout.addWidget(self.apply_dt_btn)
+
+        self.adaptive_dt_checkbox = QCheckBox("Adaptive")
+        layout.addWidget(self.adaptive_dt_checkbox)
+
+        self.cfl_label = QLabel("CFL: 0.00")
+        self.cfl_label.setMinimumWidth(80)
+        layout.addWidget(self.cfl_label)
+
+        layout.addStretch()
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    def _create_visualization_group(self):
+        """Group for all visualization settings (performance, toggles, colormaps, export)"""
+        group = QGroupBox("Visualization")
+        layout = QVBoxLayout()
+        layout.setSpacing(8)
+
+        # Row 1: Performance (frame skip, FPS)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Frame skip:"))
+        self.frame_skip_input = QSpinBox()
+        self.frame_skip_input.setRange(1, 100)
+        self.frame_skip_input.setValue(1)
+        self.frame_skip_input.setSingleStep(1)
+        self.frame_skip_input.setSuffix("x")
+        self.frame_skip_input.setMaximumWidth(70)
+        row1.addWidget(self.frame_skip_input)
+        self.apply_frame_skip_btn = QPushButton("Apply")
+        self.apply_frame_skip_btn.setMaximumWidth(60)
+        row1.addWidget(self.apply_frame_skip_btn)
+
+        row1.addSpacing(20)
+        row1.addWidget(QLabel("Target FPS:"))
+        self.vis_fps_input = QSpinBox()
+        self.vis_fps_input.setRange(10, 120)
+        self.vis_fps_input.setValue(60)
+        self.vis_fps_input.setSingleStep(5)
+        self.vis_fps_input.setSuffix(" Hz")
+        self.vis_fps_input.setMaximumWidth(80)
+        row1.addWidget(self.vis_fps_input)
+        self.apply_vis_fps_btn = QPushButton("Apply")
+        self.apply_vis_fps_btn.setMaximumWidth(60)
+        row1.addWidget(self.apply_vis_fps_btn)
+        row1.addStretch()
+        layout.addLayout(row1)
+
+        # Row 2: Display toggles
+        row2 = QHBoxLayout()
+        self.show_velocity_checkbox = QCheckBox("Velocity")
+        self.show_velocity_checkbox.setChecked(True)
+        self.show_vorticity_checkbox = QCheckBox("Vorticity")
+        self.show_vorticity_checkbox.setChecked(True)
+        self.show_sdf_checkbox = QCheckBox("SDF Mask")
+        self.show_sdf_checkbox.setChecked(False)
+        row2.addWidget(self.show_velocity_checkbox)
+        row2.addWidget(self.show_vorticity_checkbox)
+        row2.addWidget(self.show_sdf_checkbox)
+        row2.addStretch()
+        layout.addLayout(row2)
+
+        # Row 3: Colormaps
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Velocity colormap:"))
+        self.velocity_colormap_combo = QComboBox()
+        self.velocity_colormap_combo.setMaximumWidth(140)
+        self._populate_velocity_colormaps()
+        row3.addWidget(self.velocity_colormap_combo)
+
+        row3.addSpacing(15)
+        row3.addWidget(QLabel("Vorticity colormap:"))
+        self.vorticity_colormap_combo = QComboBox()
+        self.vorticity_colormap_combo.setMaximumWidth(140)
+        self._populate_vorticity_colormaps()
+        row3.addWidget(self.vorticity_colormap_combo)
+        row3.addStretch()
+        layout.addLayout(row3)
+
+        # Row 4: Export and auto-fit buttons
+        row4 = QHBoxLayout()
+        self.export_btn = QPushButton("Export Frame")
+        self.export_btn.setMaximumWidth(100)
+        self.record_btn = QPushButton("Record")
+        self.record_btn.setMaximumWidth(80)
+        self.save_btn = QPushButton("Save State")
+        self.save_btn.setEnabled(False)
+        self.save_btn.setMaximumWidth(90)
+        row4.addWidget(self.export_btn)
+        row4.addWidget(self.record_btn)
+        row4.addWidget(self.save_btn)
+
+        row4.addWidget(QLabel("|"))
+        self.autofit_velocity_btn = QPushButton("Auto-Vel")
+        self.autofit_velocity_btn.setMaximumWidth(80)
+        self.autofit_vorticity_btn = QPushButton("Auto-Vor")
+        self.autofit_vorticity_btn.setMaximumWidth(80)
+        self.autofit_both_btn = QPushButton("Auto-Both")
+        self.autofit_both_btn.setMaximumWidth(90)
+        row4.addWidget(self.autofit_velocity_btn)
+        row4.addWidget(self.autofit_vorticity_btn)
+        row4.addWidget(self.autofit_both_btn)
+        row4.addStretch()
+        layout.addLayout(row4)
+
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    # ---------- Preserved original methods ----------
+    def set_chord_range_for_domain(self, max_chord: float):
+        """Update chord spinbox range based on domain size"""
+        if hasattr(self, 'naca_chord_spinbox') and self.naca_chord_spinbox is not None:
+            self.naca_chord_spinbox.setRange(0.1, max_chord)
+            # Default to maximum chord when airfoil is selected
+            if self.obstacle_type_combo.currentText() == 'naca_airfoil':
+                self.naca_chord_spinbox.setValue(max_chord)
+            print(f"DEBUG: Updated chord range to 0.1 - {max_chord:.2f}")
+            print(f"DEBUG: Defaulted chord to {max_chord:.2f} for airfoil")
+
+    def show_naca_controls(self, show: bool) -> None:
+        """Show/hide NACA controls based on obstacle selection"""
+        if hasattr(self, 'naca_widget'):
+            self.naca_widget.setVisible(show)
+
+    def _check_naca_availability(self):
+        """Check if NACA airfoils are available"""
+        try:
+            from naca_airfoils import NACA_AIRFOILS
+            return True
+        except ImportError:
+            return False
+
+    def _update_epsilon_label(self, value):
+        """Update epsilon label and solver value when slider changes"""
+        epsilon_value = value / 100.0
+        self.epsilon_label.setText(f"{epsilon_value:.2f}")
+        
+        # Update epsilon in real-time if viewer is available
+        if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
+            try:
+                old_epsilon = float(self.parent_viewer.solver.sim_params.eps.item()) if hasattr(self.parent_viewer.solver.sim_params.eps, 'item') else float(self.parent_viewer.solver.sim_params.eps)
+                self.parent_viewer.solver.sim_params.eps = jnp.array(epsilon_value)
+                print(f"DEBUG: Real-time epsilon update from {old_epsilon:.3f} to {epsilon_value:.3f}")
+                
+                # Recompute mask with new epsilon
+                self.parent_viewer.solver.mask = self.parent_viewer.solver._compute_mask()
+                print(f"DEBUG: Real-time mask recomputed with epsilon {epsilon_value:.3f}")
+                
+                # Trigger visualization update to show changes immediately
+                if hasattr(self.parent_viewer, 'flow_viz') and self.parent_viewer.flow_viz is not None:
+                    self.parent_viewer.flow_viz.update_plots_for_new_grid(
+                        self.parent_viewer.solver.grid.nx,
+                        self.parent_viewer.solver.grid.ny,
+                        self.parent_viewer.solver.grid.lx,
+                        self.parent_viewer.solver.grid.ly
+                    )
+                    print(f"DEBUG: Visualization updated for epsilon change")
+            except Exception as e:
+                print(f"DEBUG: Real-time epsilon update failed: {e}")
+
+    def debug_set_angle_spinbox(self, value):
+        """Debug wrapper for angle_spinbox.setValue"""
+        print(f"DEBUG SPINBOX SET: Setting angle_spinbox to {value:.1f}°")
+        self.angle_spinbox.setValue(value)
+        # Also update naca_angle_spinbox if it exists (ControlPanel uses this name)
+        if hasattr(self, 'naca_angle_spinbox'):
+            if self.naca_angle_spinbox is not None:
+                self.naca_angle_spinbox.setValue(value)
+                print(f"DEBUG NACA SPINBOX SET: Setting naca_angle_spinbox to {value:.1f}° (visible: {self.naca_angle_spinbox.isVisible()})")
+            else:
+                print(f"DEBUG NACA SPINBOX: naca_angle_spinbox is None")
+        else:
+            print(f"DEBUG NACA SPINBOX: naca_angle_spinbox attribute doesn't exist")
+        
+    def debug_set_angle_slider(self, value):
+        """Debug wrapper for angle_slider.setValue"""
+        print(f"DEBUG SLIDER SET: Setting angle_slider to {value}")
+        self.angle_slider.setValue(value)
+
+    def _populate_velocity_colormaps(self):
+        """Populate velocity colormap dropdown"""
+        velocity_colormaps = [
+            'viridis', 'plasma', 'inferno', 'magma', 'cividis', 'turbo',
+            'CET-C1', 'CET-C2', 'CET-C3', 'CET-C4', 'CET-C5', 'CET-C6', 'CET-C7',
+            'CET-D1', 'CET-D2', 'CET-D3', 'CET-D4', 'CET-D6', 'CET-D7', 'CET-D8',
+            'CET-D9', 'CET-D10', 'CET-D11', 'CET-D12', 'CET-D13',
+            'CET-L1', 'CET-L2', 'CET-L3', 'CET-L4', 'CET-L5', 'CET-L6', 'CET-L7',
+            'CET-L8', 'CET-L9', 'CET-L10', 'CET-L11', 'CET-L12', 'CET-L13', 'CET-L14',
+            'CET-L15', 'CET-L16', 'CET-L17', 'CET-L18', 'CET-L19',
+            'PAL-relaxed', 'PAL-relaxed_bright'
+        ]
+        self.velocity_colormap_combo.addItems(velocity_colormaps)
+        self.velocity_colormap_combo.setCurrentText('plasma')
+
+    def _populate_vorticity_colormaps(self):
+        """Populate vorticity colormap dropdown"""
+        vorticity_colormaps = [
+            'CET-CBC1', 'coolwarm', 'RdBu', 'seismic', 'bwr', 'PiYG', 'PRGn', 'BrBG',
+            'CET-CBC2', 'CET-CBD1', 'CET-CBL1', 'CET-CBL2',
+            'CET-CBTC1', 'CET-CBTC2', 'CET-CBTD1', 'CET-CBTL1', 'CET-CBTL2',
+            'CET-I1', 'CET-I2', 'CET-I3',
+            'CET-R1', 'CET-R2', 'CET-R3', 'CET-R4',
+            '--- Sequential (Magnitude) ---',
+            'viridis', 'plasma', 'inferno', 'magma', 'cividis',
+            'PAL-relaxed', 'PAL-relaxed_bright'
+        ]
+        self.vorticity_colormap_combo.addItems(vorticity_colormaps)
+        self.vorticity_colormap_combo.setCurrentText('RdBu')
+
+
+class InfoPanel(QWidget):
+    """Information panel showing FPS, solver info, and status"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        # Add all required labels
+        self.solver_label = QLabel("Solver: Not initialized")
+        self.info_label = QLabel("Info: Ready")
+        self.div_label = QLabel("Divergence: 0.000")
+        self.sim_fps_label = QLabel("Sim FPS: 0")
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the information panel UI"""
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(10)
+
+        # ========== INFO DISPLAY ==========
+        info_group = QGroupBox("Simulation Information")
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(8)
+
+        # First row: Solver info
+        solver_row = QHBoxLayout()
+        solver_row.addWidget(QLabel("Solver:"))
+        solver_row.addWidget(self.solver_label)
+        solver_row.addStretch()
+        info_layout.addLayout(solver_row)
+
+        # Second row: Status info
+        status_row = QHBoxLayout()
+        status_row.addWidget(QLabel("Status:"))
+        status_row.addWidget(self.info_label)
+        status_row.addStretch()
+        info_layout.addLayout(status_row)
+
+        # Third row: Performance info
+        perf_row = QHBoxLayout()
+        perf_row.addWidget(QLabel("FPS:"))
+        perf_row.addWidget(self.sim_fps_label)
+        perf_row.addWidget(QLabel("|"))
+        perf_row.addWidget(QLabel("Divergence:"))
+        perf_row.addWidget(self.div_label)
+        perf_row.addStretch()
+        info_layout.addLayout(perf_row)
+
+        info_group.setLayout(info_layout)
+        main_layout.addWidget(info_group)
+        main_layout.addStretch()
+
+        self.setLayout(main_layout)
+
+    def _create_top_console(self):
+        """Create the top horizontal toolbar with info display"""
+        console = QFrame()
+        console.setFrameShape(QFrame.Shape.StyledPanel)
+        console.setStyleSheet("QFrame { background-color: #2d2d2d; border-radius: 4px; }")
+        layout = QHBoxLayout(console)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 5, 10, 5)
+
+        # Add info labels
+        layout.addWidget(self.solver_label)
+        layout.addWidget(QLabel("|"))
+        layout.addWidget(self.info_label)
+        layout.addWidget(QLabel("|"))
+        layout.addWidget(self.div_label)
+        layout.addWidget(QLabel("|"))
+        layout.addWidget(self.sim_fps_label)
+        layout.addStretch()
+
+        return console
+
+    def _create_cylinder_group(self):
+        """Group for cylinder and mask (epsilon) controls"""
+        group = QGroupBox("Cylinder & Mask")
+        layout = QHBoxLayout()
+        
+        # Cylinder radius
+        layout.addWidget(QLabel("Radius:"))
+        self.cylinder_radius_spinbox = QDoubleSpinBox()
+        self.cylinder_radius_spinbox.setRange(0.05, 2.0)
+        self.cylinder_radius_spinbox.setValue(0.18)
+        self.cylinder_radius_spinbox.setDecimals(3)
+        self.cylinder_radius_spinbox.setSingleStep(0.01)
+        self.cylinder_radius_spinbox.setMinimumWidth(80)  # Increased width
+        layout.addWidget(self.cylinder_radius_spinbox)
+        
+        self.apply_cylinder_btn = QPushButton("Apply Cylinder")
+        self.apply_cylinder_btn.setMinimumWidth(100)  # Increased width
+        layout.addWidget(self.apply_cylinder_btn)
+        layout.addWidget(QLabel("|"))
+        
+        # Epsilon slider for mask smoothness
+        layout.addWidget(QLabel("Mask Smoothness:"))
+        self.epsilon_slider = QSlider(Qt.Orientation.Horizontal)
+        self.epsilon_slider.setRange(1, 50)  # 0.01 to 0.50
+        self.epsilon_slider.setValue(5)  # 0.05 default
+        self.epsilon_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.epsilon_slider.setTickInterval(10)
+        layout.addWidget(self.epsilon_slider)
+        
+        self.epsilon_label = QLabel("0.05")
+        layout.addWidget(self.epsilon_label)
+        
+        self.apply_epsilon_btn = QPushButton("Apply Epsilon")
+        layout.addWidget(self.apply_epsilon_btn)
+        
+        # Connect epsilon slider for real-time updates
+        self.epsilon_slider.valueChanged.connect(self._update_epsilon_label)
+        
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    def _create_numerical_group(self):
+        """Group for advection scheme, pressure solver, Jacobi iterations"""
+        group = QGroupBox("Numerical Schemes")
+        layout = QHBoxLayout()
+        
+        # Advection scheme
+        layout.addWidget(QLabel("Advection:"))
+        self.scheme_combo = QComboBox()
+        self.scheme_combo.addItems(["rk3", "tvd", "weno5", "spectral"])
+        self.scheme_combo.setMaximumWidth(100)  # Increased from 80
+        layout.addWidget(self.scheme_combo)
+        
+        self.apply_scheme_btn = QPushButton("Apply Scheme")
+        self.apply_scheme_btn.setMinimumWidth(100)  # Increased width
+        layout.addWidget(self.apply_scheme_btn)
+        layout.addWidget(QLabel("|"))
+        
+        # Pressure solver
+        layout.addWidget(QLabel("Pressure:"))
+        self.pressure_combo = QComboBox()
+        self.pressure_combo.addItems(["fft", "cg", "multigrid"])
+        self.pressure_combo.setMaximumWidth(100)  # Increased width
+        layout.addWidget(self.pressure_combo)
+        
+        # Jacobi iterations (hidden by default)
+        self.jacobi_iter_label = QLabel("Jacobi Iter:")
+        self.jacobi_iter_input = QSpinBox()
+        self.jacobi_iter_input.setRange(10, 500)
+        self.jacobi_iter_input.setValue(50)
+        self.jacobi_iter_input.setMinimumWidth(80)  # Increased width
+        layout.addWidget(self.jacobi_iter_input)
+        
+        self.apply_pressure_btn = QPushButton("Apply Pressure")
+        self.apply_pressure_btn.setMinimumWidth(100)  # Increased width
+        layout.addWidget(self.apply_pressure_btn)
+        
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    def _create_obstacle_group(self):
+        """Group for obstacle selection (cylinder / NACA airfoil) and NACA parameters"""
+        print("DEBUG: ControlPanel._create_obstacle_group() called")
+        group = QGroupBox("Obstacle Configuration")
+        layout = QVBoxLayout()
+        
+        # Obstacle type selection
+        obstacle_layout = QHBoxLayout()
+        obstacle_layout.addWidget(QLabel("Type:"))
+        self.obstacle_type_combo = QComboBox()
+        self.obstacle_type_combo.addItems(["cylinder", "naca_airfoil"])
+        obstacle_layout.addWidget(self.obstacle_type_combo)
+        obstacle_layout.addStretch()
+        layout.addLayout(obstacle_layout)
+        
+        # NACA controls (hidden by default)
+        naca_layout = QHBoxLayout()
+        naca_layout.addWidget(QLabel("Chord:"))
+        self.naca_chord_spinbox = QDoubleSpinBox()
+        self.naca_chord_spinbox.setRange(0.1, 2.0)
+        self.naca_chord_spinbox.setValue(0.3)
+        self.naca_chord_spinbox.setDecimals(3)
+        self.naca_chord_spinbox.setSingleStep(0.01)
+        naca_layout.addWidget(self.naca_chord_spinbox)
+        
+        naca_layout.addWidget(QLabel("Angle:"))
+        self.naca_angle_spinbox = QDoubleSpinBox()
+        self.naca_angle_spinbox.setRange(-15.0, 15.0)
+        self.naca_angle_spinbox.setValue(5.0)
+        self.naca_angle_spinbox.setDecimals(1)
+        self.naca_angle_spinbox.setSingleStep(0.2)  # Changed from 0.5 to 0.2 degrees
+        naca_layout.addWidget(self.naca_angle_spinbox)
+        print(f"DEBUG: ControlPanel created naca_angle_spinbox at {id(self.naca_angle_spinbox)}")
+        
+        naca_layout.addWidget(QLabel("X:"))
+        self.naca_x_spinbox = QDoubleSpinBox()
+        self.naca_x_spinbox.setRange(0.1, 2.0)
+        self.naca_x_spinbox.setValue(0.3)
+        self.naca_x_spinbox.setDecimals(3)
+        self.naca_x_spinbox.setSingleStep(0.01)
+        naca_layout.addWidget(self.naca_x_spinbox)
+        
+        naca_layout.addWidget(QLabel("Y:"))
+        self.naca_y_spinbox = QDoubleSpinBox()
+        self.naca_y_spinbox.setRange(0.1, 2.0)
+        self.naca_y_spinbox.setValue(0.5)
+        self.naca_y_spinbox.setDecimals(3)
+        self.naca_y_spinbox.setSingleStep(0.01)
+        naca_layout.addWidget(self.naca_y_spinbox)
+        
+        naca_layout.addStretch()
+        layout.addLayout(naca_layout)
+        
+        # Hide NACA controls by default
+        self.naca_chord_spinbox.setVisible(False)
+        self.naca_angle_spinbox.setVisible(False)
+        self.naca_x_spinbox.setVisible(False)
+        self.naca_y_spinbox.setVisible(False)
+        
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    def _create_time_group(self):
+        """Group for time step controls and CFL"""
+        group = QGroupBox("Time Stepping")
+        layout = QHBoxLayout()
+        
+        # Time step
+        layout.addWidget(QLabel("dt:"))
+        self.dt_spinbox = QDoubleSpinBox()
+        self.dt_spinbox.setRange(0.0001, 0.1)
+        self.dt_spinbox.setValue(0.002)
+        self.dt_spinbox.setDecimals(4)
+        self.dt_spinbox.setSingleStep(0.0001)
+        self.dt_spinbox.setMinimumWidth(80)  # Increased width
+        layout.addWidget(self.dt_spinbox)
+        
+        # Adaptive dt
+        self.adaptive_dt_checkbox = QCheckBox("Adaptive dt")
+        layout.addWidget(self.adaptive_dt_checkbox)
+        layout.addWidget(QLabel("|"))
+        
+        # CFL display
+        layout.addWidget(QLabel("CFL:"))
+        self.cfl_label = QLabel("0.000")
+        self.cfl_label.setMinimumWidth(80)  # Increased width
+        layout.addWidget(self.cfl_label)
+        
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+    def _create_visualization_group(self):
+        """Group for all visualization settings (performance, toggles, colormaps, export)"""
+        group = QGroupBox("Visualization")
+        layout = QVBoxLayout()
+        
+        # Performance controls
+        perf_layout = QHBoxLayout()
+        perf_layout.addWidget(QLabel("Target FPS:"))
+        self.target_fps_spinbox = QSpinBox()
+        self.target_fps_spinbox.setRange(1, 120)
+        self.target_fps_spinbox.setValue(30)
+        perf_layout.addWidget(self.target_fps_spinbox)
+        perf_layout.addWidget(QLabel("|"))
+        
+        self.limit_fps_checkbox = QCheckBox("Limit FPS")
+        self.limit_fps_checkbox.setChecked(True)
+        perf_layout.addWidget(self.limit_fps_checkbox)
+        perf_layout.addStretch()
+        layout.addLayout(perf_layout)
+        
+        # Display toggles
+        toggle_layout = QHBoxLayout()
+        self.show_velocity_checkbox = QCheckBox("Show Velocity")
+        self.show_velocity_checkbox.setChecked(True)
+        toggle_layout.addWidget(self.show_velocity_checkbox)
+        
+        self.show_vorticity_checkbox = QCheckBox("Show Vorticity")
+        self.show_vorticity_checkbox.setChecked(True)
+        toggle_layout.addWidget(self.show_vorticity_checkbox)
+        
+        self.show_pressure_checkbox = QCheckBox("Show Pressure")
+        self.show_pressure_checkbox.setChecked(True)
+        toggle_layout.addWidget(self.show_pressure_checkbox)
+        toggle_layout.addStretch()
+        layout.addLayout(toggle_layout)
+        
+        # Colormap controls
+        colormap_layout = QHBoxLayout()
+        colormap_layout.addWidget(QLabel("Velocity:"))
+        self.velocity_colormap_combo = QComboBox()
+        self.velocity_colormap_combo.addItems(["viridis", "plasma", "inferno", "RdBu"])
+        self.velocity_colormap_combo.setCurrentText("RdBu")
+        colormap_layout.addWidget(self.velocity_colormap_combo)
+        
+        colormap_layout.addWidget(QLabel("|"))
+        
+        colormap_layout.addWidget(QLabel("Vorticity:"))
+        self.vorticity_colormap_combo = QComboBox()
+        self.vorticity_colormap_combo.addItems(["viridis", "plasma", "inferno", "RdBu"])
+        self.vorticity_colormap_combo.setCurrentText("RdBu")
+        colormap_layout.addWidget(self.vorticity_colormap_combo)
+        
+        colormap_layout.addWidget(QLabel("|"))
+        
+        colormap_layout.addWidget(QLabel("Pressure:"))
+        self.pressure_colormap_combo = QComboBox()
+        self.pressure_colormap_combo.addItems(["viridis", "plasma", "inferno", "RdBu"])
+        self.pressure_colormap_combo.setCurrentText("RdBu")
+        colormap_layout.addWidget(self.pressure_colormap_combo)
+        colormap_layout.addStretch()
+        layout.addLayout(colormap_layout)
+        
+        # Export controls
+        export_layout = QHBoxLayout()
+        self.export_data_btn = QPushButton("Export Data")
+        export_layout.addWidget(self.export_data_btn)
+        export_layout.addWidget(QLabel("|"))
+        
+        self.record_video_btn = QPushButton("Record Video")
+        export_layout.addWidget(self.record_video_btn)
+        export_layout.addStretch()
+        layout.addLayout(export_layout)
+        
+        # Auto-fit buttons
+        autofit_layout = QHBoxLayout()
+        self.autofit_velocity_btn = QPushButton("Auto-fit Velocity")
+        autofit_layout.addWidget(self.autofit_velocity_btn)
+        
+        autofit_layout.addWidget(QLabel("|"))
+        
+        self.autofit_vorticity_btn = QPushButton("Auto-fit Vorticity")
+        autofit_layout.addWidget(self.autofit_vorticity_btn)
+        
+        autofit_layout.addWidget(QLabel("|"))
+        
+        self.autofit_pressure_btn = QPushButton("Auto-fit Pressure")
+        autofit_layout.addWidget(self.autofit_pressure_btn)
+        autofit_layout.addStretch()
+        layout.addLayout(autofit_layout)
+        
+        group.setLayout(layout)
+        return group
+
+    def _update_solver_info(self):
+        """Update solver information display"""
+        # This method is called by the viewer to update solver info
+        pass  # InfoPanel doesn't need to display solver info
+
+        # Add columns to horizontal layout
+        columns_layout.addWidget(left_col, 1)  # stretch factor 1 makes them equal width
+        columns_layout.addWidget(right_col, 1)
+
+        # Add the two‑column section to the container
+        container_layout.addLayout(columns_layout)
+
+        # Add the visualization group (spans full width) below the columns
+        container_layout.addWidget(visualization_group)
+
+        # Add the container to the main layout
+        main_layout.addWidget(sidebar_container, 1)
+
+        self.setLayout(main_layout)
+
+
+    def _style_labels(self):
+        """Apply styling to info labels"""
+        style = "color: white; padding: 2px 6px; border-radius: 3px;"
+        self.sim_fps_label.setStyleSheet(f"background-color: #2c5e2c; {style}")
+        self.vis_fps_label.setStyleSheet(f"background-color: #2c2c6e; {style}")
+        self.solver_label.setStyleSheet(f"background-color: #6e2c6e; {style}")
+        self.div_label.setStyleSheet(f"background-color: #d97a00; {style}")
+        self.info_label.setStyleSheet("background-color: black; color: white; padding: 2px 8px; border-radius: 3px;")

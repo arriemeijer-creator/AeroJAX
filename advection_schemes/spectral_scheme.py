@@ -3,8 +3,10 @@ import jax.numpy as jnp
 from typing import Tuple
 
 @jax.jit
-def spectral_step(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float, dx: float, dy: float, mask: jnp.ndarray, Cs: float = 0.17, dealias: bool = True) -> Tuple[jnp.ndarray, jnp.ndarray]:
+def spectral_step(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float, dx: float, dy: float, mask: jnp.ndarray, dealias: bool = True) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Spectral method using FFT for periodic domains"""
+    print(f"[DEBUG] Spectral scheme called with dt={dt}, dealias={dealias}")
+    
     nx, ny = u.shape
     
     # Wave numbers

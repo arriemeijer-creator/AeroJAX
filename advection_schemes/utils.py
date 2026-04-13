@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class AdvectionParams:
-    scheme: str = 'upwind'
+    scheme: str = 'tvd'
     limiter: str = 'minmod'  # for TVD
     weno_epsilon: float = 1e-6  # for WENO
     dealias: bool = True  # for spectral
