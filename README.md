@@ -348,7 +348,7 @@ Differentiable CFD-ML is designed for stable real-time performance across a wide
 
 - Real-time 2D incompressible CFD solver
 - PyQt6 interactive GUI
-- Immersed boundaries (cylinders + NACA airfoils)
+- Immersed boundaries (cylinders + NACA airfoils + Freeform)
 - Divergence-PID adaptive timestep controller
 - Brinkman penalization system
 - Threaded simulation architecture
@@ -361,71 +361,94 @@ Differentiable CFD-ML is designed for stable real-time performance across a wide
 
 
 ```
-NUWE-DT-CONTROLLER/
+GitHub/
 ├── LICENSE
 ├── README.md
-├── requirements.txt (28 lines)
-├── main.py (684 lines)
-├── naca_airfoils.py (294 lines)
-├── grid_requirements.py (147 lines)
-├── test_diff_rollout.py (28 lines)
-├── test_multigrid_diff.py (35 lines)
-├── test_stability.py (80 lines)
+├── requirements.txt
+├── main.py (1390 lines)
+├── Flow.png
+├── GUI.png
+├── NACA_Airfoil.gif
+├── grid_info_20260418_190301.json
 │
 ├── advection_schemes/
-│   ├── __init__.py (9 lines)
-│   ├── rk3_scheme.py (428 lines)
-│   ├── spectral_scheme.py (85 lines)
-│   ├── tvd_scheme.py (93 lines)
-│   ├── utils.py (38 lines)
-│   └── weno5_scheme.py (102 lines)
+│   ├── __init__.py (4 lines)
+│   ├── rk3_mac.py (253 lines)
+│   ├── rk3_simple_new.py (298 lines)
+│   └── utils.py (37 lines)
 │
-├── backup/
-│   ├── baseline/
-│   ├── examples/
-│   ├── inverse/
-│   ├── latent/
-│   └── (various backup files)
+├── inverse_design_WIP/
+│   ├── __init__.py (16 lines)
+│   ├── config.py (66 lines)
+│   ├── main.py (416 lines)
+│   ├── optimizer.py (565 lines)
+│   ├── ui_components.py (416 lines)
+│   └── visualization.py (246 lines)
+│
+├── obstacles/
+│   ├── cow.py (275 lines)
+│   ├── cylinder_array.py (66 lines)
+│   ├── freeform_drawer.py (388 lines)
+│   └── naca_airfoils.py (287 lines)
 │
 ├── pressure_solvers/
-│   ├── __init__.py (7 lines)
-│   ├── cg_solver_new.py (471 lines)
-│   ├── fft_solver.py (34 lines)
-│   ├── multigrid_solver.py (167 lines)
-│   └── sor_masked.py (176 lines)
+│   ├── __init__.py (4 lines)
+│   ├── multigrid_solver.py (223 lines)
+│   └── multigrid_solver_mac.py (184 lines)
 │
 ├── solver/
-│   ├── __init__.py (78 lines)
-│   ├── boundary_conditions.py (98 lines)
-│   ├── brinkman.py (132 lines)
-│   ├── config.py (26 lines)
-│   ├── geometry.py (26 lines)
-│   ├── les_models.py (139 lines)
-│   ├── metrics.py (86 lines)
-│   ├── operators.py (116 lines)
-│   ├── params.py (276 lines)
-│   └── solver.py (983 lines)
+│   ├── __init__.py (77 lines)
+│   ├── boundary_conditions.py (97 lines)
+│   ├── brinkman.py (108 lines)
+│   ├── config.py (25 lines)
+│   ├── geometry.py (25 lines)
+│   ├── les_models.py (135 lines)
+│   ├── metrics.py (305 lines)
+│   ├── operators.py (115 lines)
+│   ├── operators_mac.py (215 lines)
+│   ├── params.py (405 lines)
+│   └── solver.py (1482 lines)
 │
 ├── timestepping/
-│   ├── __init__.py (21 lines)
-│   ├── adaptivedt.py (54 lines)
-│   └── example_usage.py (47 lines)
+│   ├── __init__.py (20 lines)
+│   └── adaptivedt.py (53 lines)
 │
 └── viewer/
-    ├── __init__.py (32 lines)
-    ├── config.py (230 lines)
-    ├── display_manager.py (279 lines)
-    ├── flow_manager.py (197 lines)
-    ├── naca_handler.py (150 lines)
-    ├── simulation_controller.py (794 lines)
-    ├── ui_components.py (1501 lines)
-    └── visualization.py (1381 lines)
+    ├── __init__.py (31 lines)
+    ├── config.py (229 lines)
+    ├── display_manager.py (757 lines)
+    ├── flow_manager.py (462 lines)
+    ├── modern_stylesheet.py (975 lines)
+    ├── naca_handler.py (146 lines)
+    ├── parameter_handlers.py (826 lines)
+    ├── simulation_controller.py (838 lines)
+    ├── state/
+    │   ├── __init__.py (63 lines)
+    │   └── store.py (404 lines)
+    ├── ui_components/
+    │   ├── __init__.py (23 lines)
+    │   ├── collapsible_groupbox.py (126 lines)
+    │   ├── control_panel.py (630 lines)
+    │   ├── dye_controls.py (95 lines)
+    │   ├── floating_control_bar.py (196 lines)
+    │   ├── info_panel.py (482 lines)
+    │   ├── obstacle_controls.py (403 lines)
+    │   ├── time_controls.py (47 lines)
+    │   ├── top_console.py (42 lines)
+    │   └── visualization_controls.py (190 lines)
+    └── visualization/
+        ├── __init__.py (13 lines)
+        ├── flow_visualization.py (1766 lines)
+        ├── obstacle_renderer.py (562 lines)
+        └── sdf_visualization.py (123 lines)
 ```
 
-**Core solver (differentiable, JAX):** ~2,000 lines
-**GUI & visualization:** ~4,500 lines
-**Advection & pressure solvers:** ~1,500 lines
-**Total functional code:** ~8,000 lines (excluding backups)
+**Core solver (differentiable, JAX):** ~3,500 lines
+**Obstacles:** ~1,016 lines
+**GUI & visualization:** ~8,000 lines
+**Advection & pressure solvers:** ~998 lines
+**Inverse design:** ~1,725 lines
+**Total functional code:** ~15,239 lines
 
 
 ---
