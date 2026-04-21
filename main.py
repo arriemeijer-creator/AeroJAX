@@ -18,7 +18,7 @@ from PyQt6.QtCore import QTimer, Qt
 import pyqtgraph as pg
 
 # Application modules
-from viewer.ui_components import ControlPanel, InfoPanel
+from viewer.ui_components import ControlPanel, InfoPanel, FloatingControlBar
 from viewer.visualization import FlowVisualization, ObstacleRenderer, SDFVisualization
 from viewer.simulation_controller import SimulationController, RecordingManager, DataExporter
 from viewer.config import ConfigManager, PerformanceSettings
@@ -26,6 +26,7 @@ from viewer.parameter_handlers import ParameterHandlers
 from viewer.display_manager import DisplayManager
 from viewer.flow_manager import FlowManager
 from viewer.naca_handler import NACAHandler
+from viewer.modern_stylesheet import MODERN_DARK_THEME, MODERN_LIGHT_THEME
 
 # Solver imports
 from solver import (
@@ -33,15 +34,11 @@ from solver import (
     CavityGeometryParams, BaselineSolver, compute_forces
 )
 
-# Optional modules - inverse design and NACA airfoils
-try:
-    from inverse.gui_integration import create_inverse_design_dock
-    INVERSE_DESIGN_AVAILABLE = True
-except ImportError:
-    INVERSE_DESIGN_AVAILABLE = False
+# Optional modules - NACA airfoils
+# Inverse design GUI integration not available
 
 try:
-    from solver.naca_airfoils import NACA_AIRFOILS
+    from obstacles.naca_airfoils import NACA_AIRFOILS
     NACA_AVAILABLE = True
 except ImportError:
     NACA_AVAILABLE = False
@@ -66,12 +63,16 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         
         # Initialize state
         self.is_paused = False
+        self.is_dark_theme = False  # Start with light theme
         
         # Initialize all components
         self._initialize_components()
         self._build_user_interface()
         self._connect_event_handlers()
         self._load_initial_state()
+        
+        # Set up Redux store subscription for unidirectional data flow
+        self.setup_store_subscription()
         
         print("Application initialized successfully")
         
@@ -130,10 +131,11 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # User interface panels
         self.control_panel = ControlPanel(parent=self)
         self.info_panel = InfoPanel(self)
+        self.floating_control_bar = FloatingControlBar(parent=self)
         
         # Visualization components
         self.plot_widget = pg.GraphicsLayoutWidget()
-        self.flow_viz = FlowVisualization(self.plot_widget, solver=self.solver)
+        self.flow_viz = FlowVisualization(self.plot_widget, solver=self.solver, control_panel=self.control_panel)
         
         # Connect visualization to info panel for marker visibility control
         self.info_panel.set_visualization(self.flow_viz)
@@ -143,16 +145,19 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Configure colormaps from saved settings
         self.flow_viz.set_initial_colormaps(
             velocity_colormap=self.config.viz_config.default_velocity_colormap,
-            vorticity_colormap=self.config.viz_config.default_vorticity_colormap
+            vorticity_colormap=self.config.viz_config.default_vorticity_colormap,
+            pressure_colormap='RdBu'  # Default pressure colormap
         )
         
         # Visual overlays - restore obstacle renderer with error handling
         try:
-            if hasattr(self.flow_viz, 'vel_outline') and hasattr(self.flow_viz, 'vort_outline'):
-                if self.flow_viz.vel_outline is not None and self.flow_viz.vort_outline is not None:
+            if hasattr(self.flow_viz, 'vel_outline') and hasattr(self.flow_viz, 'vort_outline') and hasattr(self.flow_viz, 'scalar_outline') and hasattr(self.flow_viz, 'pressure_outline'):
+                if self.flow_viz.vel_outline is not None and self.flow_viz.vort_outline is not None and self.flow_viz.scalar_outline is not None and self.flow_viz.pressure_outline is not None:
                     self.obstacle_renderer = ObstacleRenderer(
-                        self.flow_viz.vel_outline, 
-                        self.flow_viz.vort_outline
+                        self.flow_viz.vel_outline,
+                        self.flow_viz.vort_outline,
+                        self.flow_viz.scalar_outline,
+                        self.flow_viz.pressure_outline
                     )
                 else:
                     self.obstacle_renderer = None
@@ -180,6 +185,26 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
     
     def _build_user_interface(self) -> None:
         """Construct the main application window layout."""
+        # Apply modern light theme stylesheet (default)
+        self.setStyleSheet(MODERN_LIGHT_THEME)
+        
+        # Update theme toggle button to reflect light mode
+        self.control_panel.theme_toggle_btn.setText("☀️")
+        self.control_panel.theme_toggle_btn.setToolTip("Switch to Dark Mode")
+        
+        # Set plot background for light mode
+        self.config.viz_config.plot_background = "#ffffff"
+
+        # Add floating control bar as a dock widget
+        self.floating_control_dock = QDockWidget("Quick Controls", self)
+        self.floating_control_dock.setWidget(self.floating_control_bar)
+        self.floating_control_dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+                                               QDockWidget.DockWidgetFeature.DockWidgetMovable)
+        self.floating_control_dock.setAllowedAreas(Qt.DockWidgetArea.TopDockWidgetArea |
+                                                   Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, self.floating_control_dock)
+        self.floating_control_dock.setFloating(True)  # Make it float on startup
+
         # Window properties
         self.setWindowTitle("Baseline Navier-Stokes Solver")
         self.setGeometry(100, 100, 
@@ -197,15 +222,24 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         left_sidebar = QWidget()
         left_sidebar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left_layout = QVBoxLayout()
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(5)
         left_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Control panel (top of left sidebar)
-        left_layout.addWidget(self.control_panel)
+        # Control panel (top of left sidebar) - 70% of vertical space
+        left_layout.addWidget(self.control_panel, 7)
         
-        # Info panel (bottom of left sidebar)
-        left_layout.addWidget(self.info_panel)
-        left_layout.addStretch()
+        # Add a horizontal divider line
+        from PyQt6.QtWidgets import QFrame
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFrameShadow(QFrame.Shadow.Sunken)
+        divider.setLineWidth(1)
+        divider.setMinimumHeight(2)
+        divider.setStyleSheet("QFrame { background-color: #888; border: none; }")
+        left_layout.addWidget(divider)
+        
+        # Info panel (bottom of left sidebar) - 30% of vertical space
+        left_layout.addWidget(self.info_panel, 3)
         
         left_sidebar.setLayout(left_layout)
         
@@ -227,24 +261,6 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             PerformanceSettings.MIN_PLOT_WIDTH, 
             PerformanceSettings.MIN_PLOT_HEIGHT
         )
-        
-        # Optional inverse design feature
-        if INVERSE_DESIGN_AVAILABLE:
-            self._add_inverse_design_panel()
-    
-    def _add_inverse_design_panel(self) -> None:
-        """Add the inverse design dock widget to the interface."""
-        try:
-            self.inverse_dock, self.inverse_controls = create_inverse_design_dock(
-                self.solver, self
-            )
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.inverse_dock)
-            self.inverse_dock.setVisible(False)  # Hidden by default
-            print("Inverse design panel added")
-        except Exception as e:
-            print(f"Failed to add inverse design panel: {e}")
-            self.inverse_dock = None
-            self.inverse_controls = None
     
     def _connect_event_handlers(self) -> None:
         """Connect all UI controls to their callback functions."""
@@ -252,12 +268,41 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.control_panel.start_btn.clicked.connect(self.start_simulation)
         self.control_panel.pause_btn.clicked.connect(self.pause_simulation)
         self.control_panel.reset_btn.clicked.connect(self.reset_simulation)
+
+        # Floating control bar controls
+        self.floating_control_bar.start_btn.clicked.connect(self.start_simulation)
+        self.floating_control_bar.pause_btn.clicked.connect(self.pause_simulation)
+        self.floating_control_bar.reset_btn.clicked.connect(self.reset_simulation)
+        self.floating_control_bar.velocity_colormap_combo.currentTextChanged.connect(self.change_velocity_colormap)
+        self.floating_control_bar.vorticity_colormap_combo.currentTextChanged.connect(self.change_vorticity_colormap)
+        self.floating_control_bar.pressure_colormap_combo.currentTextChanged.connect(self.change_pressure_colormap)
+        self.floating_control_bar.error_metrics_cb.stateChanged.connect(self.on_error_metrics_checkbox_changed)
+        self.floating_control_bar.airfoil_metrics_cb.stateChanged.connect(self.on_airfoil_metrics_checkbox_changed)
+
+        # Floating control bar dye controls
+        self.floating_control_bar.dye_x_slider.valueChanged.connect(self.update_dye_marker_from_sliders)
+        self.floating_control_bar.dye_y_slider.valueChanged.connect(self.update_dye_marker_from_sliders)
+        self.floating_control_bar.inject_dye_btn.pressed.connect(self.inject_dye_start)
+        self.floating_control_bar.inject_dye_btn.released.connect(self.inject_dye_stop)
+        # Sync floating control bar dye sliders to sidebar
+        self.floating_control_bar.dye_x_slider.valueChanged.connect(self._sync_dye_x_slider_from_floating)
+        self.floating_control_bar.dye_y_slider.valueChanged.connect(self._sync_dye_y_slider_from_floating)
+
+        # Synchronize floating control bar checkboxes with info panel
+        self._sync_floating_checkboxes()
+
+        # Connect info panel checkbox changes to sync floating checkboxes
+        self.info_panel.diagnostics_checkbox.stateChanged.connect(self._sync_error_metrics_from_info_panel)
+        self.info_panel.compute_airfoil_metrics_cb.toggled.connect(self._sync_airfoil_metrics_from_info_panel)
+
+        self.control_panel.theme_toggle_btn.clicked.connect(self.toggle_theme)
         
         # Parameter controls
         self.control_panel.apply_re_btn.clicked.connect(self.update_reynolds_number)
         self.info_panel.metrics_frame_skip_input.valueChanged.connect(self.update_metrics_frame_skip)
         self.info_panel.diagnostics_checkbox.stateChanged.connect(self.on_metrics_checkbox_changed)
         self.control_panel.inject_dye_btn.clicked.connect(self.inject_dye)
+        self.info_panel.save_csv_btn.clicked.connect(self.save_csv_dialog)
         
         # Constraint lock controls
         self.control_panel.lock_u_cb.stateChanged.connect(self.on_lock_u_changed)
@@ -266,21 +311,26 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.control_panel.apply_precision_btn.clicked.connect(self.update_precision)
         self.control_panel.apply_grid_btn.clicked.connect(self.update_grid_resolution)
         self.control_panel.apply_cylinder_btn.clicked.connect(self.update_cylinder_radius)
+        self.control_panel.apply_cylinder_array_btn.clicked.connect(self.update_cylinder_array_params)
         self.control_panel.apply_epsilon_btn.clicked.connect(self.update_epsilon)
-        self.control_panel.apply_scheme_btn.clicked.connect(self.update_advection_scheme)
-        self.control_panel.apply_pressure_btn.clicked.connect(self.update_pressure_solver)
         self.control_panel.apply_dt_btn.clicked.connect(self.update_timestep)
         self.control_panel.apply_frame_skip_btn.clicked.connect(self.update_frame_skip)
         self.control_panel.apply_vis_fps_btn.clicked.connect(self.update_visualization_fps)
         self.control_panel.apply_les_btn.clicked.connect(self.update_les_settings)
+        self.control_panel.apply_vcycles_btn.clicked.connect(self.update_vcycles)
         
         # Visualization toggles
         self.control_panel.show_velocity_checkbox.stateChanged.connect(self.toggle_velocity_display)
         self.control_panel.show_vorticity_checkbox.stateChanged.connect(self.toggle_vorticity_display)
         self.control_panel.show_sdf_checkbox.stateChanged.connect(self.toggle_sdf_overlay)
-        self.control_panel.show_scalar_checkbox.stateChanged.connect(self.toggle_scalar_display)
+        self.control_panel.show_streamlines_checkbox.stateChanged.connect(self.toggle_streamlines)
+        self.control_panel.fast_mode_checkbox.stateChanged.connect(self.toggle_fast_mode)
         self.control_panel.velocity_colormap_combo.currentTextChanged.connect(self.change_velocity_colormap)
         self.control_panel.vorticity_colormap_combo.currentTextChanged.connect(self.change_vorticity_colormap)
+        self.control_panel.pressure_colormap_combo.currentTextChanged.connect(self.change_pressure_colormap)
+        self.control_panel.log_colorscale_checkbox.stateChanged.connect(self.update_visualization_settings)
+        self.control_panel.spatial_colorscale_checkbox.stateChanged.connect(self.update_visualization_settings)
+        self.control_panel.upscale_slider.valueChanged.connect(self.change_upscale_factor)
         
         # Dye injection button - continuous injection while held
         self.inject_dye_pressed = False
@@ -290,6 +340,9 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Dye slider signals to update marker position
         self.control_panel.dye_x_slider.valueChanged.connect(self.update_dye_marker_from_sliders)
         self.control_panel.dye_y_slider.valueChanged.connect(self.update_dye_marker_from_sliders)
+        # Sync sidebar dye sliders to floating control bar
+        self.control_panel.dye_x_slider.valueChanged.connect(self._sync_dye_x_slider_from_sidebar)
+        self.control_panel.dye_y_slider.valueChanged.connect(self._sync_dye_y_slider_from_sidebar)
         
         # Export and recording
         self.control_panel.export_btn.clicked.connect(self.export_simulation_data)
@@ -304,16 +357,20 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Advanced features
         # Temporarily disconnect adaptive dt checkbox to prevent automatic triggering
         # self.control_panel.adaptive_dt_checkbox.stateChanged.connect(self.toggle_adaptive_timestep)
-        self.control_panel.pressure_combo.currentTextChanged.connect(self.on_pressure_solver_selected)
         
         if hasattr(self.control_panel, 'flow_combo'):
             self.control_panel.flow_combo.currentTextChanged.connect(self.on_flow_type_selected)
         
-        if hasattr(self.control_panel, 'obstacle_combo') and self.control_panel.obstacle_combo:
-            self.control_panel.obstacle_combo.currentTextChanged.connect(self.on_obstacle_type_selected)
+        if hasattr(self.control_panel, 'obstacle_button_group') and self.control_panel.obstacle_button_group:
+            # Radio buttons are connected in ui_components.py via buttonClicked signal
+            pass
         
         if hasattr(self.control_panel, 'apply_naca_btn') and self.control_panel.apply_naca_btn:
             self.control_panel.apply_naca_btn.clicked.connect(self.apply_naca_airfoil_settings)
+        
+        # Freeform drawing button
+        if hasattr(self.control_panel, 'draw_custom_btn') and self.control_panel.draw_custom_btn:
+            self.control_panel.draw_custom_btn.clicked.connect(self.launch_freeform_drawer)
         
         # Real-time angle slider connection
         if hasattr(self.control_panel, 'angle_slider') and self.control_panel.angle_slider:
@@ -353,20 +410,28 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Create obstacle renderer if it wasn't created during initialization
         if self.obstacle_renderer is None:
             try:
-                if hasattr(self.flow_viz, 'vel_outline') and hasattr(self.flow_viz, 'vort_outline'):
-                    if self.flow_viz.vel_outline is not None and self.flow_viz.vort_outline is not None:
-                        self.obstacle_renderer = ObstacleRenderer(
-                            self.flow_viz.vel_outline, 
-                            self.flow_viz.vort_outline
-                        )
-                        print("Obstacle renderer created successfully in _load_initial_state")
-                    else:
-                        print("Warning: Outline items are None, skipping obstacle renderer creation")
+                # Try to get outline items from flow_viz
+                vel_outline = getattr(self.flow_viz, 'vel_outline', None) if hasattr(self, 'flow_viz') else None
+                vort_outline = getattr(self.flow_viz, 'vort_outline', None) if hasattr(self, 'flow_viz') else None
+                scalar_outline = getattr(self.flow_viz, 'scalar_outline', None) if hasattr(self, 'flow_viz') else None
+                pressure_outline = getattr(self.flow_viz, 'pressure_outline', None) if hasattr(self, 'flow_viz') else None
+
+                if vel_outline is not None and vort_outline is not None and scalar_outline is not None and pressure_outline is not None:
+                    self.obstacle_renderer = ObstacleRenderer(vel_outline, vort_outline, scalar_outline, pressure_outline)
+                    print("Obstacle renderer created successfully in _load_initial_state")
                 else:
-                    print("Warning: Flow visualization outline items not available")
+                    print(f"Warning: Outline items not available - vel_outline={vel_outline}, vort_outline={vort_outline}, scalar_outline={scalar_outline}, pressure_outline={pressure_outline}")
             except Exception as e:
                 print(f"Warning: Failed to create obstacle renderer: {e}")
                 self.obstacle_renderer = None
+        
+        # Update obstacle outlines with initial position
+        if self.obstacle_renderer is not None and self.solver is not None:
+            try:
+                self.obstacle_renderer.update_obstacle_outlines(self.solver, force_update=True)
+                print("Obstacle outlines updated with initial position")
+            except Exception as e:
+                print(f"Warning: Failed to update initial obstacle outlines: {e}")
         
         # Populate UI controls with current solver values
         self.control_panel.re_input.setValue(int(self.solver.flow.Re))
@@ -381,21 +446,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         if hasattr(self.control_panel, 'lock_re_cb'):
             self.control_panel.lock_re_cb.setChecked(self.solver.flow.constraints.lock_Re)
         self.control_panel.flow_combo.setCurrentText(self.solver.sim_params.flow_type)
-        self.control_panel.scheme_combo.setCurrentText(self.solver.sim_params.advection_scheme)
-        self.control_panel.pressure_combo.setCurrentText(self.solver.sim_params.pressure_solver)
         self.control_panel.dt_spinbox.setValue(self.solver.dt)
-        
-        # Apply LDC scheme restrictions if starting with LDC flow
-        if self.solver.sim_params.flow_type == 'lid_driven_cavity':
-            current_scheme = self.solver.sim_params.advection_scheme
-            if current_scheme not in ['spectral', 'weno5']:
-                print(f"LDC: Switching from {current_scheme} to weno5 (LDC-compatible)")
-                self.solver.apply_advection_scheme('weno5')
-                self.control_panel.scheme_combo.setCurrentText('weno5')
-            # Update GUI to only show LDC-compatible schemes
-            self.control_panel.scheme_combo.clear()
-            self.control_panel.scheme_combo.addItems(['spectral', 'weno5'])
-            self.control_panel.scheme_combo.setCurrentText('weno5')
         
         # Block signal during initial setup to prevent automatic triggering
         self.control_panel.adaptive_dt_checkbox.blockSignals(True)
@@ -403,18 +454,26 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.control_panel.adaptive_dt_checkbox.blockSignals(False)
         
         # Initialize NACA controls with current solver values
-        if hasattr(self.control_panel, 'angle_spinbox'):
+        if hasattr(self.control_panel, 'angle_spinbox') and self.control_panel.angle_spinbox is not None:
             self.control_panel.angle_spinbox.setValue(self.solver.sim_params.naca_angle)
-        if hasattr(self.control_panel, 'angle_slider'):
+        if hasattr(self.control_panel, 'angle_slider') and self.control_panel.angle_slider is not None:
             # Convert angle to slider value (-20 to +20 degrees to -200 to 200)
             slider_value = int(self.solver.sim_params.naca_angle * 10.0)
             self.control_panel.angle_slider.setValue(slider_value)
-        if hasattr(self.control_panel, 'chord_spinbox'):
+        if hasattr(self.control_panel, 'chord_spinbox') and self.control_panel.chord_spinbox is not None:
             self.control_panel.chord_spinbox.setValue(self.solver.sim_params.naca_chord)
-        if hasattr(self.control_panel, 'naca_combo'):
+        if hasattr(self.control_panel, 'naca_combo') and self.control_panel.naca_combo is not None:
             self.control_panel.naca_combo.setCurrentText(self.solver.sim_params.naca_airfoil)
-        if hasattr(self.control_panel, 'obstacle_combo'):
-            self.control_panel.obstacle_combo.setCurrentText(self.solver.sim_params.obstacle_type)
+        if hasattr(self.control_panel, 'obstacle_button_group') and self.control_panel.obstacle_button_group is not None:
+            # Update radio button selection based on current obstacle type
+            if self.solver.sim_params.obstacle_type == 'cylinder':
+                self.control_panel.cylinder_radio.setChecked(True)
+            elif self.solver.sim_params.obstacle_type == 'naca_airfoil':
+                self.control_panel.naca_radio.setChecked(True)
+            elif self.solver.sim_params.obstacle_type == 'cow':
+                self.control_panel.cow_radio.setChecked(True)
+            elif self.solver.sim_params.obstacle_type == 'three_cylinder_array':
+                self.control_panel.cylinder_array_radio.setChecked(True)
         
         # Configure grid display - set spinboxes to current solver values
         self.control_panel.grid_x_spinbox.setValue(self.solver.grid.nx)
@@ -455,7 +514,6 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         
         # Update status displays
         self._update_solver_info()
-        self.on_pressure_solver_selected(self.solver.sim_params.pressure_solver)
     
     # -------------------------------------------------------------------------
     # Simulation Control
@@ -476,12 +534,11 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                     'metrics_ready': self.handle_metrics_data
                 })
 
-            # Restart refresh timer
-            refresh_interval = int(1000 / self.config.viz_config.target_vis_fps)
-            self.refresh_timer.start(refresh_interval)
-
+            self.on_simulation_started()  # Lock x-position slider
             self.control_panel.start_btn.setEnabled(False)
             self.control_panel.pause_btn.setEnabled(True)
+            refresh_interval = int(1000 / self.config.viz_config.target_vis_fps)
+            self.refresh_timer.start(refresh_interval)
 
         except Exception as e:
             print(f"ERROR: start_simulation failed: {e}")
@@ -495,6 +552,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.sim_controller.pause_simulation()
         self.refresh_timer.stop()
         
+        self.on_simulation_stopped()  # Unlock x-position slider
         self.control_panel.start_btn.setEnabled(True)
         self.control_panel.pause_btn.setEnabled(False)
         self.is_paused = True  # Track that we're paused, not stopped
@@ -506,6 +564,8 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Stop simulation
         self.refresh_timer.stop()
         self.sim_controller.stop_simulation()
+        
+        self.on_simulation_stopped()  # Unlock x-position slider
         
         # Recreate entire solver object to ensure clean state
         ic = self.initial_config
@@ -591,11 +651,13 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             'time': [0.0],
             'dt': [self.solver.dt],
             'l2_change': [0.0],
+            'rms_change': [0.0],
             'max_change': [0.0],
+            'change_99p': [0.0],
             'rel_change': [0.0],
             'l2_change_u': [0.0],
             'l2_change_v': [0.0],
-            'max_divergence': [0.0],
+            'rms_divergence': [0.0],
             'l2_divergence': [0.0],
             'drag': [0.0],
             'lift': [0.0],
@@ -650,12 +712,14 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Restore NACA parameters if they were preserved
         if obstacle_type == 'naca_airfoil' and preserved_naca_angle is not None:
             self.solver.sim_params.naca_angle = preserved_naca_angle
-            self.solver.sim_params.naca_chord = preserved_naca_chord
+            # Re-scale chord to 15% of lx (don't preserve old value)
+            chord_percentage = 0.15
+            self.solver.sim_params.naca_chord = chord_percentage * self.solver.grid.lx
             self.solver.sim_params.naca_airfoil = preserved_naca_airfoil
             self.solver.sim_params.naca_x = preserved_naca_x
             self.solver.sim_params.naca_y = preserved_naca_y
             
-            print(f"Preserved NACA parameters during reset: angle={preserved_naca_angle:.1f}°, chord={preserved_naca_chord:.1f}")
+            print(f"Preserved NACA parameters during reset: angle={preserved_naca_angle:.1f}°, chord={self.solver.sim_params.naca_chord:.3f} (15% of lx)")
         
         # Recompute mask with preserved parameters
         self.solver.mask = self.solver._compute_mask()
@@ -672,6 +736,131 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         
         self.solver._initialize_cavity_flow()
         self.solver.mask = self.solver._compute_mask()
+    
+    # -------------------------------------------------------------------------
+    # Theme Management
+    # -------------------------------------------------------------------------
+    
+    def toggle_theme(self) -> None:
+        """Toggle between light and dark themes."""
+        self.is_dark_theme = not self.is_dark_theme
+        
+        if self.is_dark_theme:
+            self.setStyleSheet(MODERN_DARK_THEME)
+            self.control_panel.theme_toggle_btn.setText("🌙")
+            self.control_panel.theme_toggle_btn.setToolTip("Switch to Light Mode")
+            plot_bg = "#1e1e2e"
+        else:
+            self.setStyleSheet(MODERN_LIGHT_THEME)
+            self.control_panel.theme_toggle_btn.setText("☀️")
+            self.control_panel.theme_toggle_btn.setToolTip("Switch to Dark Mode")
+            plot_bg = "#ffffff"
+        
+        # Update plot background color
+        self.plot_widget.setBackground(plot_bg)
+        self.config.viz_config.plot_background = plot_bg
+        
+        # Update visualization if it exists
+        if hasattr(self, 'flow_viz') and self.flow_viz:
+            # PlotItem uses setBrush for background
+            self.flow_viz.vel_plot.getViewBox().setBackgroundColor(plot_bg)
+            self.flow_viz.vort_plot.getViewBox().setBackgroundColor(plot_bg)
+
+    def _sync_floating_checkboxes(self) -> None:
+        """Synchronize floating control bar checkboxes with info panel checkboxes."""
+        # Sync error metrics checkbox
+        self.floating_control_bar.error_metrics_cb.blockSignals(True)
+        self.floating_control_bar.error_metrics_cb.setChecked(self.info_panel.diagnostics_checkbox.isChecked())
+        self.floating_control_bar.error_metrics_cb.blockSignals(False)
+
+        # Sync airfoil metrics checkbox
+        self.floating_control_bar.airfoil_metrics_cb.blockSignals(True)
+        self.floating_control_bar.airfoil_metrics_cb.setChecked(self.info_panel.compute_airfoil_metrics_cb.isChecked())
+        self.floating_control_bar.airfoil_metrics_cb.blockSignals(False)
+
+    def _sync_error_metrics_from_info_panel(self, state) -> None:
+        """Sync floating error metrics checkbox when info panel checkbox changes."""
+        self.floating_control_bar.error_metrics_cb.blockSignals(True)
+        self.floating_control_bar.error_metrics_cb.setChecked(state == 2)  # Qt.CheckState.Checked
+        self.floating_control_bar.error_metrics_cb.blockSignals(False)
+
+    def _sync_airfoil_metrics_from_info_panel(self, checked: bool) -> None:
+        """Sync floating airfoil metrics checkbox when info panel checkbox changes."""
+        self.floating_control_bar.airfoil_metrics_cb.blockSignals(True)
+        self.floating_control_bar.airfoil_metrics_cb.setChecked(checked)
+        self.floating_control_bar.airfoil_metrics_cb.blockSignals(False)
+
+    def _sync_dye_x_slider_from_floating(self):
+        """Sync dye X slider from floating control bar to sidebar"""
+        self.control_panel.dye_x_slider.blockSignals(True)
+        self.control_panel.dye_x_slider.setValue(self.floating_control_bar.dye_x_slider.value())
+        self.control_panel.dye_x_slider.blockSignals(False)
+
+    def _sync_dye_y_slider_from_floating(self):
+        """Sync dye Y slider from floating control bar to sidebar"""
+        self.control_panel.dye_y_slider.blockSignals(True)
+        self.control_panel.dye_y_slider.setValue(self.floating_control_bar.dye_y_slider.value())
+        self.control_panel.dye_y_slider.blockSignals(False)
+
+    def _sync_dye_x_slider_from_sidebar(self):
+        """Sync dye X slider from sidebar to floating control bar"""
+        self.floating_control_bar.dye_x_slider.blockSignals(True)
+        self.floating_control_bar.dye_x_slider.setValue(self.control_panel.dye_x_slider.value())
+        self.floating_control_bar.dye_x_slider.blockSignals(False)
+
+    def _sync_dye_y_slider_from_sidebar(self):
+        """Sync dye Y slider from sidebar to floating control bar"""
+        self.floating_control_bar.dye_y_slider.blockSignals(True)
+        self.floating_control_bar.dye_y_slider.setValue(self.control_panel.dye_y_slider.value())
+        self.floating_control_bar.dye_y_slider.blockSignals(False)
+
+    def on_airfoil_metrics_checkbox_changed(self, state) -> None:
+        """Handle airfoil metrics checkbox state change from floating control bar."""
+        is_checked = (state == 2)  # Qt.CheckState.Checked
+        # Sync info panel checkbox
+        self.info_panel.compute_airfoil_metrics_cb.blockSignals(True)
+        self.info_panel.compute_airfoil_metrics_cb.setChecked(is_checked)
+        self.info_panel.compute_airfoil_metrics_cb.blockSignals(False)
+
+        # Call the info panel's toggle method to update solver
+        self.info_panel._toggle_airfoil_metrics(is_checked)
+
+        # Also toggle stagnation and separation markers when airfoil metrics is activated
+        if is_checked:
+            self.info_panel.show_stagnation_marker_cb.blockSignals(True)
+            self.info_panel.show_stagnation_marker_cb.setChecked(True)
+            self.info_panel.show_stagnation_marker_cb.blockSignals(False)
+            self.info_panel._toggle_stagnation_marker(True)
+
+            self.info_panel.show_separation_marker_cb.blockSignals(True)
+            self.info_panel.show_separation_marker_cb.setChecked(True)
+            self.info_panel.show_separation_marker_cb.blockSignals(False)
+            self.info_panel._toggle_separation_marker(True)
+        else:
+            self.info_panel.show_stagnation_marker_cb.blockSignals(True)
+            self.info_panel.show_stagnation_marker_cb.setChecked(False)
+            self.info_panel.show_stagnation_marker_cb.blockSignals(False)
+            self.info_panel._toggle_stagnation_marker(False)
+
+            self.info_panel.show_separation_marker_cb.blockSignals(True)
+            self.info_panel.show_separation_marker_cb.setChecked(False)
+            self.info_panel.show_separation_marker_cb.blockSignals(False)
+            self.info_panel._toggle_separation_marker(False)
+
+    def on_error_metrics_checkbox_changed(self, state) -> None:
+        """Handle error metrics checkbox state change from floating control bar."""
+        is_checked = (state == 2)  # Qt.CheckState.Checked
+        # Sync info panel checkbox
+        self.info_panel.diagnostics_checkbox.blockSignals(True)
+        self.info_panel.diagnostics_checkbox.setChecked(is_checked)
+        self.info_panel.diagnostics_checkbox.blockSignals(False)
+
+        # Call the existing handler to update metrics worker
+        self.on_metrics_checkbox_changed(state)
+
+        # Toggle error plot visibility
+        if hasattr(self, 'flow_viz') and self.flow_viz and hasattr(self.flow_viz, 'l2_plot') and self.flow_viz.l2_plot:
+            self.flow_viz.l2_plot.setVisible(is_checked)
     
     # -------------------------------------------------------------------------
     # Visualization Controls
@@ -699,26 +888,56 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
     
     def inject_dye_at_slider_position(self):
         """Inject dye at the position specified by sliders"""
-        if not self.solver.sim_params.use_scalar:
-            print("Enable Dye checkbox first")
-            return
-        
         # Get slider values (0-100 range)
         x_percent = self.control_panel.dye_x_slider.value() / 100.0
         y_percent = self.control_panel.dye_y_slider.value() / 100.0
-        
+
         # Map to simulation domain
         x_pos = x_percent * self.solver.grid.lx
         y_pos = y_percent * self.solver.grid.ly
-        
+
         # Inject dye
         self.solver.inject_dye(x_pos, y_pos, amount=0.5)
-    
+
+    def inject_dye(self):
+        """Inject dye at current slider position"""
+        # Get slider values (0-100 range)
+        x_percent = self.control_panel.dye_x_slider.value() / 100.0
+        y_percent = self.control_panel.dye_y_slider.value() / 100.0
+
+        # Map to simulation domain
+        x_pos = x_percent * self.solver.grid.lx
+        y_pos = y_percent * self.solver.grid.ly
+
+        # Inject dye
+        self.solver.inject_dye(x_pos, y_pos, amount=0.5)
+
+    def save_csv_dialog(self):
+        """Open file dialog to save CSV with custom filename"""
+        from PyQt6.QtWidgets import QFileDialog
+
+        # Get current angle of attack for default filename
+        aoa = getattr(self.solver.sim_params, 'naca_angle', 10.0)
+        default_filename = f"AoA={aoa:.0f}_metrics.csv"
+
+        # Open file dialog
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Metrics CSV",
+            default_filename,
+            "CSV Files (*.csv);;All Files (*)"
+        )
+
+        if file_path:
+            # Call save_csv_to_file method (inherited from DisplayManager)
+            success = self.save_csv_to_file(file_path)
+            if success:
+                print(f"CSV saved successfully to {file_path}")
+            else:
+                print("Failed to save CSV")
+
     def inject_dye_start(self):
         """Start continuous dye injection when button is pressed"""
-        if not self.solver.sim_params.use_scalar:
-            print("Enable Dye checkbox first")
-            return
         self.inject_dye_pressed = True
         self.inject_dye_at_slider_position()  # Inject immediately
     
@@ -742,37 +961,169 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Update marker
         self.flow_viz.update_dye_marker(x_pos, y_pos)
     
-    def toggle_scalar_display(self, state):
-        """Enable/disable dye injection and visualization"""
-        is_enabled = (state == 2)
-        self.solver.sim_params.use_scalar = is_enabled
-        
-        if is_enabled:
-            # Reset dye field
-            self.solver.c = jnp.zeros_like(self.solver.c)
-            self.flow_viz.scalar_plot.show()
-            # Update dye marker position and make it visible
-            self.update_dye_marker_from_sliders()
-            print("Dye injection enabled")
-        else:
+    def launch_freeform_drawer(self):
+        """Launch the pygame drawing interface for custom obstacles."""
+        try:
+            from PyQt6.QtWidgets import QProgressDialog
+            from PyQt6.QtCore import Qt
+            
+            from obstacles.freeform_drawer import FreeformDrawer, create_freeform_mask_smooth
+            
+            print("Launching freeform obstacle drawer...")
+            
+            # Show progress dialog while pygame initializes
+            progress = QProgressDialog("Initializing Pygame drawing window...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setWindowTitle("Loading")
+            progress.setCancelButton(None)
+            progress.show()
+            
+            # Process events to ensure the dialog is displayed
+            QApplication.processEvents()
+            
+            # Create and run the drawer (pygame initializes inside run())
+            drawer = FreeformDrawer(width=512, height=512)
+            mask = drawer.run()
+            
+            # Close progress dialog after pygame window closes
+            progress.close()
+            
+            if mask is not None:
+                print("Custom obstacle mask created successfully!")
+                
+                # Store the mask in the solver for later use
+                self.solver.custom_obstacle_mask = mask
+                
+                # Update the solver to use the custom obstacle
+                self.solver.sim_params.obstacle_type = 'custom'
+                self.solver.sim_params.custom_mask = mask
+                
+                # Recompute the mask with the custom obstacle
+                self.solver.mask = self.solver._compute_mask()
+                
+                # Update obstacle outlines
+                if self.obstacle_renderer is not None:
+                    self.obstacle_renderer.update_obstacle_outlines(self.solver, force_update=True)
+                
+                print("Custom obstacle applied to simulation!")
+            else:
+                print("Drawing cancelled or no mask saved.")
+                
+        except ImportError as e:
+            print(f"Error: Required dependencies for freeform drawing not available: {e}")
+            print("Please ensure pygame and scipy are installed.")
             self.flow_viz.scalar_plot.hide()
             # Hide dye marker when scalar display is disabled
             if hasattr(self.flow_viz, 'dye_marker') and self.flow_viz.dye_marker is not None:
                 self.flow_viz.dye_marker.setVisible(False)
             print("Dye injection disabled")
     
+    def toggle_streamlines(self, state):
+        """Enable/disable streamlines visualization"""
+        is_enabled = (state == 2)
+        if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+            self.flow_viz.toggle_streamlines(is_enabled)
+            print(f"Streamlines {'enabled' if is_enabled else 'disabled'}")
+    
+    def toggle_fast_mode(self, state):
+        """Enable/disable fast mode (RK2 vs RK3)"""
+        is_enabled = (state == 2)
+        if hasattr(self.solver, 'sim_params'):
+            # Stop simulation before switching schemes to prevent instability
+            self.refresh_timer.stop()
+            if hasattr(self, 'sim_controller'):
+                self.sim_controller.stop_simulation()
+            
+            self.solver.sim_params.fast_mode = is_enabled
+            print(f"Fast Mode {'enabled (RK2 - Real-Time Interaction)' if is_enabled else 'disabled (RK3 - Scientific/F1 Grade)'}")
+            
+            # Reset adaptive timestep controller if it exists
+            if hasattr(self.solver, 'dt_controller') and self.solver.dt_controller is not None:
+                # Reset to initial timestep to account for different stability limits
+                from timestepping.adaptivedt import PIDController
+                target_div = 0.1 if is_enabled else 0.15  # RK2 needs tighter control
+                self.solver.dt_controller = PIDController(
+                    dt=self.solver.dt,
+                    target_divergence=target_div,
+                    kp=0.1, ki=0.01, kd=0.0,
+                    dt_min=1e-6, dt_max=self.solver.dt_max
+                )
+                print(f"Adaptive dt controller reset with target_div={target_div}")
+            
+            # Clear JAX cache to recompile with new fast_mode setting
+            import jax
+            jax.clear_caches()
+            
+            # Clear JIT cache to force recompilation with new fast_mode
+            if hasattr(self.solver, '_jit_cache'):
+                self.solver._jit_cache.clear()
+            
+            # Recompile solver with new fast_mode
+            if hasattr(self.solver, '_step_jit'):
+                self.solver._step_jit = jax.jit(self.solver._step)
+            
+            # Re-enable start button
+            if hasattr(self.control_panel, 'start_btn'):
+                self.control_panel.start_btn.setEnabled(True)
+                self.control_panel.pause_btn.setEnabled(False)
+    
     def change_velocity_colormap(self, colormap_name: str) -> None:
         """Change the color scheme for velocity plots."""
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
             self.flow_viz.change_velocity_colormap(colormap_name)
             self.config.viz_config.default_velocity_colormap = colormap_name
-    
+            # Sync floating control bar
+            if hasattr(self, 'floating_control_bar') and self.floating_control_bar is not None:
+                self.floating_control_bar.velocity_colormap_combo.blockSignals(True)
+                self.floating_control_bar.velocity_colormap_combo.setCurrentText(colormap_name)
+                self.floating_control_bar.velocity_colormap_combo.blockSignals(False)
+            # Sync control panel
+            if hasattr(self, 'control_panel') and self.control_panel is not None:
+                self.control_panel.velocity_colormap_combo.blockSignals(True)
+                self.control_panel.velocity_colormap_combo.setCurrentText(colormap_name)
+                self.control_panel.velocity_colormap_combo.blockSignals(False)
+
     def change_vorticity_colormap(self, colormap_name: str) -> None:
-        """Change the color scheme for vorticity plots."""
+        """Change vorticity colormap"""
+        self.flow_viz.change_vorticity_colormap(colormap_name)
+        # Sync floating control bar
+        if hasattr(self, 'floating_control_bar') and self.floating_control_bar is not None:
+            self.floating_control_bar.vorticity_colormap_combo.blockSignals(True)
+            self.floating_control_bar.vorticity_colormap_combo.setCurrentText(colormap_name)
+            self.floating_control_bar.vorticity_colormap_combo.blockSignals(False)
+        # Sync control panel
+        if hasattr(self, 'control_panel') and self.control_panel is not None:
+            self.control_panel.vorticity_colormap_combo.blockSignals(True)
+            self.control_panel.vorticity_colormap_combo.setCurrentText(colormap_name)
+            self.control_panel.vorticity_colormap_combo.blockSignals(False)
+
+    def change_pressure_colormap(self, colormap_name: str) -> None:
+        """Change pressure colormap"""
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
-            self.flow_viz.change_vorticity_colormap(colormap_name)
-            self.config.viz_config.default_vorticity_colormap = colormap_name
+            self.flow_viz.change_pressure_colormap(colormap_name)
+            # Sync floating control bar
+            if hasattr(self, 'floating_control_bar') and self.floating_control_bar is not None:
+                self.floating_control_bar.pressure_colormap_combo.blockSignals(True)
+                self.floating_control_bar.pressure_colormap_combo.setCurrentText(colormap_name)
+                self.floating_control_bar.pressure_colormap_combo.blockSignals(False)
+            # Sync control panel
+            if hasattr(self, 'control_panel') and self.control_panel is not None:
+                self.control_panel.pressure_colormap_combo.blockSignals(True)
+                self.control_panel.pressure_colormap_combo.setCurrentText(colormap_name)
+                self.control_panel.pressure_colormap_combo.blockSignals(False)
+
+    def update_visualization_settings(self) -> None:
+        """Update visualization settings when color scale checkboxes change"""
+        # The visualization loop automatically checks checkbox states each frame
+        # No additional action needed - just ensures settings are applied immediately
+        pass
     
+    def change_upscale_factor(self, value: int) -> None:
+        """Change the visualization upscale factor for smooth rendering"""
+        if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+            self.flow_viz.upscale_factor = value
+            self.control_panel.upscale_label.setText(f"{value}x")
+
     def auto_scale_velocity_plot(self) -> None:
         """Adjust velocity plot scale to fit current data."""
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
@@ -869,13 +1220,6 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         
         # Don't call reset_simulation - it causes crashes with adaptive dt
     
-    def on_pressure_solver_selected(self, solver_name: str) -> None:
-        """Handle pressure solver selection changes."""
-        if solver_name == 'jacobi':
-            self.control_panel.jacobi_iter_input.setEnabled(True)
-        else:
-            self.control_panel.jacobi_iter_input.setEnabled(False)
-    
     # -------------------------------------------------------------------------
     # Export and Recording
     # -------------------------------------------------------------------------
@@ -916,31 +1260,15 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
 # -----------------------------------------------------------------------------
 
 def run_visualization(solver: BaselineSolver, config: ConfigManager) -> None:
-    """Launch the visualization application."""
+    """Launch the visualization application (no longer used - splash screen moved to main)."""
     print("Starting Navier-Stokes flow visualization...")
     print(f"Domain: X=[0.0, {solver.grid.lx:.1f}] m, Y=[0.0, {solver.grid.ly:.1f}] m")
     print(f"Grid: {solver.grid.nx} x {solver.grid.ny}")
     print(f"Reynolds number: {solver.flow.Re:.1f}")
     print("Close the window to stop the simulation.")
     
-    try:
-        app = QApplication(sys.argv)
-        viewer = BaselineViewerRefactored(solver, config)
-        viewer.show()
-        
-        # Add global exception handler
-        def handle_exception(exc_type, exc_value, exc_traceback):
-            print(f"Unhandled exception: {exc_type.__name__}: {exc_value}")
-            print("Application continuing despite exception...")
-        
-        sys.excepthook = handle_exception
-        
-        sys.exit(app.exec())
-    except Exception as e:
-        print(f"Critical application error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    # Splash screen is now handled in main()
+    # This function is kept for backward compatibility but is not used
 
 
 def main() -> None:
@@ -950,6 +1278,21 @@ def main() -> None:
         print("Navier-Stokes Flow Simulator")
         print("=" * 60)
         
+        # === CREATE AND SHOW SPLASH SCREEN FIRST ===
+        # Create QApplication first (required for splash screen)
+        app = QApplication(sys.argv)
+        
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtWidgets import QSplashScreen
+        from PyQt6.QtCore import Qt
+        
+        splash_pixmap = QPixmap("viewer/ui_components/splash screen.png")
+        splash_pixmap = splash_pixmap.scaled(int(splash_pixmap.width() * 0.75), int(splash_pixmap.height() * 0.75), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        splash = QSplashScreen(splash_pixmap, Qt.WindowType.WindowStaysOnTopHint)
+        splash.show()
+        app.processEvents()  # Force splash to render immediately
+        
+        # Now do all the heavy initialization while splash is visible
         # Add global exception handler
         def handle_exception(exc_type, exc_value, exc_traceback):
             print(f"CRITICAL ERROR: {exc_type.__name__}: {exc_value}")
@@ -958,38 +1301,55 @@ def main() -> None:
         
         sys.excepthook = handle_exception
         
-        # Load configuration
+        # Load configuration (this can be slow)
+        splash.showMessage("Loading configuration...")
+        app.processEvents()
         config = ConfigManager()
         
         # Create solver with default settings
+        splash.showMessage("Creating simulation grid...")
+        app.processEvents()
         grid = GridParams(
             nx=config.sim_config.default_nx, 
             ny=config.sim_config.default_ny, 
             lx=config.sim_config.default_lx, 
             ly=config.sim_config.default_ly
         )
+        
+        splash.showMessage("Configuring flow parameters...")
+        app.processEvents()
         flow = FlowParams(
             Re=config.sim_config.default_reynolds,
             nu=config.sim_config.default_nu,
             constraints=FlowConstraints(lock_U=False, lock_nu=True, lock_Re=True, lock_L=True)
         )
+        
+        splash.showMessage("Setting up geometry...")
+        app.processEvents()
         geometry = GeometryParams(
             center_x=jnp.array(2.5), 
             center_y=jnp.array(config.sim_config.default_ly / 2.0),  # Center in Y
             radius=jnp.array(0.18)  # Still need radius for compatibility
         )
+        
         simulation_params = SimulationParams(
             eps=0.01,
             obstacle_type='naca_airfoil',
-            naca_airfoil='NACA 2412',
+            naca_airfoil='NACA 0012',
             naca_x=2.5,
             naca_y=config.sim_config.default_ly / 2.0,  # Center in Y
-            naca_chord=3.0,
-            naca_angle=-10.0
+            naca_chord=0.15 * config.sim_config.default_lx,  # 15% of domain width
+            naca_angle=10.0
         )
         
+        splash.showMessage("Initializing solver...")
+        app.processEvents()
+
+        # Clear JAX caches to force recompilation with updated code
+        jax.clear_caches()
+
         solver = BaselineSolver(
-            grid, flow, geometry, simulation_params, 
+            grid, flow, geometry, simulation_params,
             dt=config.sim_config.default_dt
         )
         
@@ -1002,7 +1362,21 @@ def main() -> None:
         print(f"  Initial perturbation applied")
         print(f"  Ready for vortex shedding visualization\n")
         
-        run_visualization(solver, config)
+        # Create and show main window, then close splash
+        splash.showMessage("Building user interface...")
+        app.processEvents()
+        viewer = BaselineViewerRefactored(solver, config)
+        viewer.showMaximized()
+        splash.finish(viewer)  # This closes the splash screen
+        
+        # Add global exception handler
+        def handle_exception(exc_type, exc_value, exc_traceback):
+            print(f"Unhandled exception: {exc_type.__name__}: {exc_value}")
+            print("Application continuing despite exception...")
+        
+        sys.excepthook = handle_exception
+        
+        sys.exit(app.exec())
         
     except Exception as e:
         print(f"FATAL ERROR: {e}")

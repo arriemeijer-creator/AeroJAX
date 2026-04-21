@@ -23,7 +23,7 @@ class VisualizationConfig:
     default_vorticity_colormap: str = 'coolwarm'
     
     # Plot settings
-    plot_background: str = 'w'
+    plot_background: str = '#ffffff'
     auto_downsample: bool = True
     downsample_method: str = 'average'
 
@@ -32,23 +32,23 @@ class VisualizationConfig:
 class SimulationConfig:
     """Configuration for simulation settings"""
     # Default parameters
-    default_reynolds: float = 1000.0  # Good for vortex shedding
+    default_reynolds: float = 2000.0  # Good for vortex shedding
     default_nu: float = 0.003  # Kinematic viscosity
-    default_dt: float = 0.001
+    default_dt: float = 0.01
     default_u_inf: float = None  # Will be calculated from Re, nu, L
     
     # Grid settings
     default_nx: int = 512   # Medium resolution for good performance
-    default_ny: int = 96   # Medium resolution for good performance
+    default_ny: int = 128  # Updated to match 20:5 aspect ratio for uniform grid spacing
     default_lx: float = 20.0
-    default_ly: float = 3.75
+    default_ly: float = 5.0  # Calculated for uniform grid spacing (dx=dy) with 512x128
     
     # Pressure solver settings
     pressure_max_iter: int = 50
     pressure_tolerance: float = 1e-4
     
     # Performance settings
-    adaptive_dt_enabled: bool = True  # Enable Diffrax adaptive controller
+    adaptive_dt_enabled: bool = False  # Disabled to prevent timestep oscillation instability
     cfl_target: float = 0.5
 
 
@@ -158,8 +158,8 @@ class PerformanceSettings:
     
     # Reynolds number limits
     MIN_REYNOLDS = 10
-    MAX_REYNOLDS = 1000
-    DEFAULT_REYNOLDS = 1000
+    MAX_REYNOLDS = 10000
+    DEFAULT_REYNOLDS = 2000
     
     # Time step limits
     MIN_DT = 0.0001
@@ -173,7 +173,7 @@ class PerformanceSettings:
     
     # NACA airfoil limits
     MIN_CHORD = 0.1
-    MAX_CHORD = 2.0
+    MAX_CHORD = 5.0
     DEFAULT_CHORD = 0.5
     
     MIN_ANGLE = -20.0
