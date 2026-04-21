@@ -95,37 +95,14 @@ def apply_brinkman_penalization_mild(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.n
 
 @jax.jit
 def apply_brinkman_penalization_consistent(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
-                                           dt: float, nu: float, dx: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                                           dt: float, nu: float, dx: float, brinkman_eta: float = 1000.0) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Consistent Brinkman penalization following physics-based recommendations.
-
-    η = ρ / (N * dt)  where N = 2 (decay in 2 timesteps)
+    Minimal penalization - just apply mask.
+    The mask itself provides the obstacle boundary.
     """
-    # Step B: η from damping timescale
-    rho = 1.0  # Density
-    N_decay = 2.0  # Decay in 2 timesteps
-    eta_solid = rho / (N_decay * dt)
-
-    # Step A: ε tied to grid
-    k_eps = 1.5
-    eps = k_eps * dx
-
-    # Step C: Check penetration depth constraint
-    tau = rho / eta_solid
-    ell_p = jnp.sqrt(nu * tau)  # Momentum penetration depth
-
-    # Step 4: Smooth spatial variation of η
-    # Sigmoid trick: sharper boundary transition with defined gradient everywhere
-    beta = 20.0  # Sharpness parameter; higher = sharper wall
-    chi = jax.nn.sigmoid(beta * (0.5 - mask))  # Solid fraction (0 in fluid, 1 in solid)
-    eta = eta_solid * chi  # η(x) = η_solid * χ(x)
-
-    # Apply penalization
-    u_penalized = u / (1.0 + dt * eta)
-    v_penalized = v / (1.0 + dt * eta)
-
-    # Hard-zero the interior: force velocity to zero inside airfoil
-    u_final = u_penalized * jnp.where(mask > 0.01, 1.0, 0.0)
-    v_final = v_penalized * jnp.where(mask > 0.01, 1.0, 0.0)
+    # For now, Brinkman just applies the mask
+    # The mask itself provides the obstacle boundary
+    u_final = u * mask
+    v_final = v * mask
 
     return u_final, v_final

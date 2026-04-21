@@ -25,23 +25,20 @@ def compute_strain_rate(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float):
 
 
 @jax.jit
-def box_filter_2d(f: jnp.ndarray, dx: float, dy: float, filter_width: int = 2):
-    """Simple box filter (test filter) for dynamic model"""
-    # Average over 2x2 stencil (α=2 test filter)
-    f_filtered = jnp.zeros_like(f)
+def box_filter_2d(f: jnp.ndarray, dx: float, dy: float, filter_ratio: int = 2):
+    """Test filter with width = filter_ratio * grid spacing (5-point stencil for 2Δ)"""
+    # Generate all offset pairs
+    offsets = [(i, j) for i in range(-filter_ratio, filter_ratio+1) 
+                for j in range(-filter_ratio, filter_ratio+1)]
     
-    # Interior points (2 to end-2 to avoid boundaries)
-    f_filtered = f_filtered.at[1:-1, 1:-1].set(
-        (f[1:-1, 1:-1] + 
-         f[2:, 1:-1] + f[:-2, 1:-1] +
-         f[1:-1, 2:] + f[1:-1, :-2]) / 5.0
-    )
+    # Use jax.lax.scan to iterate over offsets and accumulate
+    def accumulate(acc, offset):
+        i, j = offset
+        rolled = jnp.roll(jnp.roll(f, i, axis=0), j, axis=1)
+        return acc + rolled, None
     
-    # Boundaries: copy original
-    f_filtered = f_filtered.at[0, :].set(f[0, :])
-    f_filtered = f_filtered.at[-1, :].set(f[-1, :])
-    f_filtered = f_filtered.at[:, 0].set(f[:, 0])
-    f_filtered = f_filtered.at[:, -1].set(f[:, -1])
+    f_filtered, _ = jax.lax.scan(accumulate, jnp.zeros_like(f), jnp.array(offsets))
+    f_filtered = f_filtered / ((2*filter_ratio+1)**2)
     
     return f_filtered
 
@@ -62,8 +59,8 @@ def dynamic_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, de
     u_test = box_filter_2d(u, dx, dy)
     v_test = box_filter_2d(v, dx, dy)
     
-    # Step 3: Compute strain rate at test level
-    S_mag_test, _ = compute_strain_rate(u_test, v_test, dx * alpha, dy * alpha)
+    # Step 3: Compute strain rate at test level (use same dx, dy - filter handles coarsening)
+    S_mag_test, _ = compute_strain_rate(u_test, v_test, dx, dy)
     
     # Step 4: Compute Leonard stress L_ij = ũ_iũ_j - (u_i u_j)_test
     uu = u * u
@@ -79,11 +76,11 @@ def dynamic_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, de
     L_22 = v_test * v_test - vv_test
     
     # Step 5: Compute M_ij = α²|S̃|S̃_ij - (|S|S_ij)_test
-    # Need S_ij components at grid and test levels
-    du_dx_test = grad_x(u_test, dx * alpha)
-    du_dy_test = grad_y(u_test, dy * alpha)
-    dv_dx_test = grad_x(v_test, dx * alpha)
-    dv_dy_test = grad_y(v_test, dy * alpha)
+    # Need S_ij components at grid and test levels (use same dx, dy)
+    du_dx_test = grad_x(u_test, dx)
+    du_dy_test = grad_y(u_test, dy)
+    dv_dx_test = grad_x(v_test, dx)
+    dv_dy_test = grad_y(v_test, dy)
     
     S_xx_test = du_dx_test
     S_yy_test = dv_dy_test
@@ -131,8 +128,8 @@ def dynamic_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, de
 
 
 @jax.jit
-def constant_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, delta: float, C_s: float = 0.17):
-    """Constant coefficient Smagorinsky model"""
+def constant_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, delta: float, C_s: float = 0.1):
+    """Constant coefficient Smagorinsky model (C_s=0.1 for 2D turbulence)"""
     S_mag, _ = compute_strain_rate(u, v, dx, dy)
     nu_sgs = (C_s * delta)**2 * S_mag
     return nu_sgs

@@ -13,3 +13,10 @@ numpy>=1.24.0
 pyqt6>=6.4.0
 pyqtgraph>=0.13.0
 matplotlib>=3.5.0
+
+# Freeform drawing
+pygame>=2.5.0
+scipy>=1.10.0
+
+# Airfoil analysis
+pyxfoil

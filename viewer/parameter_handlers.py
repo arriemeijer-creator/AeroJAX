@@ -10,6 +10,7 @@ import gc
 from typing import Optional
 
 from solver import GridParams
+from viewer.state import store, set_reynolds_number, set_u_inf, set_nu
 
 
 class ParameterHandlers:
@@ -28,8 +29,9 @@ class ParameterHandlers:
         lock_nu = self.control_panel.lock_nu_cb.isChecked()
         lock_Re = self.control_panel.lock_re_cb.isChecked()
         
-        # Perform full reset to ensure clean state before applying changes
-        self.full_reset_to_initial()
+        # Store current LES settings to preserve them
+        current_use_les = self.solver.sim_params.use_les
+        current_les_model = self.solver.sim_params.les_model
 
         try:
             # Update constraint locks
@@ -83,10 +85,10 @@ class ParameterHandlers:
                 print(f"Consider using a smaller timestep or reducing velocity. Current grid dx={self.solver.grid.dx:.4f} m")
                 print(f"Recommended CFL-based dt for U={new_U:.2f} m/s: ~{0.2 * self.solver.grid.dx / new_U:.6f} s")
 
-            # Update solver parameters
-            self.solver.flow.U_inf = new_U
-            self.solver.flow.nu = new_nu
-            self.solver.flow.Re = new_Re
+            # Dispatch Redux actions to update store state (Redux is now single source of truth)
+            store.dispatch(set_reynolds_number(new_Re))
+            store.dispatch(set_u_inf(new_U))
+            store.dispatch(set_nu(new_nu))
             
             # Update vorticity plot title with new parameters
             if hasattr(self, 'flow_viz'):
@@ -113,11 +115,11 @@ class ParameterHandlers:
                     print(f"Disabling adaptive dt for high velocity U={new_U:.2f} m/s")
 
                     if new_U > 5.0:
-                        cfl_target = 0.05
-                        dt_max = 0.001
+                        cfl_target = 0.2  # Increased from 0.05 for faster simulation
+                        dt_max = 0.005  # Increased from 0.001
                     else:
-                        cfl_target = 0.1
-                        dt_max = 0.002
+                        cfl_target = 0.3  # Increased from 0.1
+                        dt_max = 0.005  # Increased from 0.002
 
                     dx = self.solver.grid.dx
                     dy = self.solver.grid.dy
@@ -132,8 +134,26 @@ class ParameterHandlers:
                         cfl_target = 0.05  # Very conservative for very high velocities
                     elif new_U > 3.0:
                         cfl_target = 0.1   # Conservative for high velocities
+                    elif new_U > 1.5:
+                        cfl_target = 0.15  # Conservative for moderate velocities
                     else:
                         cfl_target = 0.3   # Normal for low velocities
+
+                    # Further reduce CFL target for low viscosities (high Reynolds numbers)
+                    if new_nu < 1e-4:
+                        cfl_target = min(cfl_target, 0.02)  # More aggressive reduction for very low viscosity
+                    elif new_nu < 1e-3:
+                        cfl_target = min(cfl_target, 0.05)   # Moderate reduction for low viscosity
+                    elif new_nu < 2e-3:
+                        cfl_target = min(cfl_target, 0.1)    # Additional reduction for moderate-low viscosity
+
+                    # Add Reynolds number awareness - even with moderate velocity, high Re needs small CFL
+                    if hasattr(self.solver.flow, 'Re') and self.solver.flow.Re > 500:
+                        cfl_target = min(cfl_target, 0.1)   # Conservative for Re > 500
+                    if hasattr(self.solver.flow, 'Re') and self.solver.flow.Re > 1000:
+                        cfl_target = min(cfl_target, 0.1)    # Conservative for Re > 1000
+                    if hasattr(self.solver.flow, 'Re') and self.solver.flow.Re > 2000:
+                        cfl_target = min(cfl_target, 0.1)    # Conservative for Re > 2000
 
                     dx = self.solver.grid.dx
                     dy = self.solver.grid.dy
@@ -145,11 +165,15 @@ class ParameterHandlers:
                     if new_nu < 1e-4:
                         dt_max = min(dt_max, 0.001)
                     elif new_nu < 1e-3:
-                        dt_max = min(dt_max, 0.005)
+                        dt_max = min(dt_max, 0.002)
+                    elif new_nu < 2e-3:
+                        dt_max = min(dt_max, 0.003)
                     if new_U > 5.0:
                         dt_max = min(dt_max, 0.001)  # Very conservative for U>5m/s
                     elif new_U > 3.0:
                         dt_max = min(dt_max, 0.002)  # Conservative for U>3m/s
+                    elif new_U > 1.5:
+                        dt_max = min(dt_max, 0.003)  # Conservative for U>1.5m/s
 
                     self.solver.dt = min(dt_cfl, dt_diffusion, dt_max)
                     self.solver.dt = max(self.solver.dt, self.solver.sim_params.dt_min)
@@ -165,6 +189,16 @@ class ParameterHandlers:
 
             self.solver._step_jit = jax.jit(self.solver._step)
 
+            # Restore LES settings that were preserved
+            self.solver.sim_params.use_les = current_use_les
+            self.solver.sim_params.les_model = current_les_model
+            self.solver.sim_params.dynamic_smagorinsky = (current_les_model == "dynamic_smagorinsky")
+
+            # Suggest grid refinement for high Re
+            if new_Re > 15000 and self.solver.grid.nx < 1024:
+                print(f"WARNING: Re={new_Re:.0f} on {self.solver.grid.nx}×{self.solver.grid.ny} grid may be unstable.")
+                print(f"Suggested grid: {min(2048, self.solver.grid.nx*2)}×{min(768, self.solver.grid.ny*2)}")
+
             # Reinitialize flow state with new parameters
             if self.solver.sim_params.flow_type == 'von_karman':
                 self.solver._initialize_von_karman_flow()
@@ -172,6 +206,9 @@ class ParameterHandlers:
                 self.solver._initialize_cavity_flow()
             elif self.solver.sim_params.flow_type == 'taylor_green':
                 self.solver._initialize_taylor_green_flow()
+
+            # Preserve user-specified dt - do not recalculate when updating Re
+            # The dt is set during solver initialization and should remain constant
 
             self.solver.iteration = 0
             
@@ -266,9 +303,9 @@ class ParameterHandlers:
         current_flow = self.solver.sim_params.flow_type
         
         # Calculate domain size to maintain uniform grid spacing (dx = dy)
-        # Use base grid spacing from 512x96 with domain 20.0x3.75
+        # Use base grid spacing from 512x128 with domain 20.0x5.0
         base_dx = 20.0 / 512  # Base grid spacing in x
-        base_dy = 3.75 / 96   # Base grid spacing in y
+        base_dy = 5.0 / 128   # Base grid spacing in y
         
         # Use the smaller spacing to ensure uniform voxels (no stretching)
         uniform_spacing = min(base_dx, base_dy)
@@ -287,7 +324,16 @@ class ParameterHandlers:
         try:
             # Clear ALL JAX caches before grid change
             jax.clear_caches()
-            
+
+            # Re-import multigrid solver to force recompilation with new grid dimensions
+            import importlib
+            import pressure_solvers.multigrid_solver as mg_module
+            importlib.reload(mg_module)
+            from pressure_solvers import poisson_multigrid
+            # Update solver's reference to reloaded multigrid solver
+            import solver
+            solver.poisson_multigrid = poisson_multigrid
+
             # Clear existing JIT compilations
             if hasattr(self.solver, '_step_jit'):
                 delattr(self.solver, '_step_jit')
@@ -345,12 +391,17 @@ class ParameterHandlers:
                 
                 # Update NACA position if using NACA airfoil
                 if hasattr(self.solver.sim_params, 'naca_airfoil') and self.solver.sim_params.naca_airfoil:
-                    self.solver.sim_params.naca_x = cylinder_x
-                    self.solver.sim_params.naca_y = grid_ly * 0.5  # Always center in Y
-                    
-                    # Scale chord length proportionally with domain
-                    base_chord = 0.5  # Base chord for reference domain
-                    self.solver.sim_params.naca_chord = base_chord * scale_factor
+                    # Scale x-position as percentage of domain width (25% of lx)
+                    x_percentage = 0.25  # 25% from left
+                    self.solver.sim_params.naca_x = x_percentage * grid_lx
+
+                    # Scale y-position as percentage of domain height (50% of ly)
+                    y_percentage = 0.5  # Centered in Y
+                    self.solver.sim_params.naca_y = y_percentage * grid_ly
+
+                    # Scale chord length as percentage of domain width (15% of lx)
+                    chord_percentage = 0.15  # 15% of domain width
+                    self.solver.sim_params.naca_chord = chord_percentage * grid_lx
             
             # Recreate mask AFTER updating obstacle positions
             self.solver.mask = self.solver._compute_mask()
@@ -410,7 +461,7 @@ class ParameterHandlers:
             print(f"Flow reinitialized and JIT functions recompiled")
             
             # Update NACA chord range based on new domain size
-            max_chord = min(grid_lx * 0.3, grid_ly * 0.4)  # Max 30% of domain width, 40% of height
+            max_chord = min(grid_lx * 0.5, grid_ly * 0.6, 5.0)  # Max 50% of width, 60% of height, or 5.0
             self.control_panel.set_chord_range_for_domain(max_chord)
             
             # ULTRA-CONSERVATIVE: Minimal initialization to prevent any crashes
@@ -498,6 +549,51 @@ class ParameterHandlers:
             self.control_panel.start_btn.setEnabled(True)
             self.control_panel.pause_btn.setEnabled(False)
     
+    def update_cylinder_array_params(self) -> None:
+        """Update cylinder array diameter and spacing."""
+        self.refresh_timer.stop()
+        self.sim_controller.stop_simulation()
+        
+        try:
+            # Get new parameters from UI
+            new_diameter = self.control_panel.cylinder_diameter_spinbox.value()
+            new_spacing = self.control_panel.cylinder_spacing_spinbox.value()
+            
+            # Update cylinder array parameters in solver
+            if hasattr(self.solver.sim_params, 'cylinder_diameter'):
+                self.solver.sim_params.cylinder_diameter = new_diameter
+            else:
+                self.solver.sim_params.cylinder_diameter = new_diameter
+            
+            if hasattr(self.solver.sim_params, 'cylinder_spacing'):
+                self.solver.sim_params.cylinder_spacing = new_spacing
+            else:
+                self.solver.sim_params.cylinder_spacing = new_spacing
+            
+            # Clear JAX caches before recompiling with new geometry
+            jax.clear_caches()
+            
+            # Recompute mask with new parameters
+            self.solver.mask = self.solver._compute_mask()
+            
+            # Recompile solver
+            self.solver._step_jit = jax.jit(self.solver._step)
+            
+            # Update obstacle outlines
+            if hasattr(self, 'obstacle_renderer') and self.obstacle_renderer:
+                self.obstacle_renderer.update_obstacle_outlines(self.solver, force_update=True)
+            
+            # Don't reset simulation - just recompile and continue
+            self.control_panel.start_btn.setEnabled(True)
+            self.control_panel.pause_btn.setEnabled(False)
+            
+            print(f"Cylinder array updated: diameter={new_diameter}, spacing={new_spacing}")
+            
+        except Exception as e:
+            print(f"Error updating cylinder array parameters: {e}")
+            self.control_panel.start_btn.setEnabled(True)
+            self.control_panel.pause_btn.setEnabled(False)
+    
     def update_epsilon(self) -> None:
         """Update epsilon multiplier for mask smoothness."""
         # Stop everything
@@ -506,16 +602,16 @@ class ParameterHandlers:
         self.is_paused = False
 
         try:
-            # Get new eps_multiplier from UI
+            # Get new eps_multiplier from UI (slider value divided by 100)
             slider_value = self.control_panel.epsilon_slider.value()
-            new_eps_multiplier = float(slider_value)
+            new_eps_multiplier = float(slider_value) / 100.0
 
             # Safety clamp
             if new_eps_multiplier > 10:
-                print(f"WARNING: eps_multiplier {new_eps_multiplier:.1f} too large, clamping to 10")
+                print(f"WARNING: eps_multiplier {new_eps_multiplier:.2f} too large, clamping to 10")
                 new_eps_multiplier = 10.0
-                self.control_panel.epsilon_slider.setValue(int(new_eps_multiplier))
-                self.control_panel.epsilon_label.setText(str(int(new_eps_multiplier)))
+                self.control_panel.epsilon_slider.setValue(int(new_eps_multiplier * 100))
+                self.control_panel.epsilon_label.setText(f"{new_eps_multiplier:.2f}")
 
             # Update epsilon in solver
             if hasattr(self.solver, 'sim_params'):
@@ -550,9 +646,9 @@ class ParameterHandlers:
             self.solver.v_prev = jnp.copy(self.solver.v)
             self.solver.history = {'time': [], 'dt': [], 'drag': [], 'lift': [],
                                   # Change metrics (not error)
-                                  'l2_change': [], 'l2_change_u': [], 'l2_change_v': [], 'max_change': [], 'rel_change': [],
+                                  'l2_change': [], 'rms_change': [], 'l2_change_u': [], 'l2_change_v': [], 'max_change': [], 'change_99p': [], 'rel_change': [],
                                   # Continuity metrics
-                                  'max_divergence': [], 'l2_divergence': [],
+                                  'rms_divergence': [], 'l2_divergence': [],
                                   # Airfoil metrics
                                   'airfoil_metrics': {'CL': [], 'CD': [], 'stagnation_x': [], 'separation_x': [], 'Cp_min': [], 'wake_deficit': []}}
 
@@ -564,52 +660,6 @@ class ParameterHandlers:
             print(f"Error updating epsilon: {e}")
             import traceback
             traceback.print_exc()
-            self.control_panel.start_btn.setEnabled(True)
-            self.control_panel.pause_btn.setEnabled(False)
-    
-    def update_advection_scheme(self) -> None:
-        """Change the advection discretization scheme."""
-        selected_scheme = self.control_panel.scheme_combo.currentText()
-        
-        self.refresh_timer.stop()
-        self.sim_controller.stop_simulation()
-        
-        try:
-            self.solver.apply_advection_scheme(selected_scheme)
-            self.reset_simulation(keep_timer_running=False)
-            
-            print(f"Advection scheme set to {selected_scheme}")
-            self._update_solver_info()
-            
-            self.control_panel.start_btn.setEnabled(True)
-            self.control_panel.pause_btn.setEnabled(False)
-            
-        except Exception as e:
-            print(f"Error updating advection scheme: {e}")
-            import traceback
-            traceback.print_exc()
-            self.control_panel.start_btn.setEnabled(True)
-            self.control_panel.pause_btn.setEnabled(False)
-    
-    def update_pressure_solver(self) -> None:
-        """Change the pressure Poisson solver."""
-        selected_solver = self.control_panel.pressure_combo.currentText()
-        
-        self.refresh_timer.stop()
-        self.sim_controller.stop_simulation()
-        
-        try:
-            self.solver.sim_params.pressure_solver = selected_solver
-            self.reset_simulation(keep_timer_running=False)
-            
-            print(f"Pressure solver set to {selected_solver}")
-            self._update_solver_info()
-            
-            self.control_panel.start_btn.setEnabled(True)
-            self.control_panel.pause_btn.setEnabled(False)
-            
-        except Exception as e:
-            print(f"Error updating pressure solver: {e}")
             self.control_panel.start_btn.setEnabled(True)
             self.control_panel.pause_btn.setEnabled(False)
     
@@ -660,8 +710,12 @@ class ParameterHandlers:
         self.refresh_timer.stop()
         self.sim_controller.stop_simulation()
         
-        # Perform full reset to ensure clean state before applying changes
-        self.full_reset_to_initial()
+        # Store current Reynolds settings to preserve them
+        current_U = self.solver.flow.U_inf
+        current_nu = self.solver.flow.nu
+        current_Re = self.solver.flow.Re
+        # Store current obstacle type to preserve it
+        current_obstacle_type = self.solver.sim_params.obstacle_type
         
         try:
             # Update solver parameters with stored values
@@ -682,7 +736,15 @@ class ParameterHandlers:
             # Recompile other JIT functions
             from solver import vorticity, divergence
             self.solver._vorticity = jax.jit(vorticity, static_argnums=(2, 3))
+            
+            # Restore Reynolds settings that were preserved
+            self.solver.flow.U_inf = current_U
+            self.solver.flow.nu = current_nu
+            self.solver.flow.Re = current_Re
             self.solver._divergence = jax.jit(divergence, static_argnums=(2, 3))
+            
+            # Restore obstacle type that was preserved
+            self.solver.sim_params.obstacle_type = current_obstacle_type
             
             print(f"LES settings updated: use_les={use_les}, model={les_model}")
             
@@ -699,6 +761,26 @@ class ParameterHandlers:
             traceback.print_exc()
             self.control_panel.start_btn.setEnabled(True)
             self.control_panel.pause_btn.setEnabled(False)
+
+    def update_vcycles(self) -> None:
+        """Update multigrid V-cycles setting."""
+        vcycles = self.control_panel.vcycles_slider.value()
+        
+        # Update solver parameter
+        self.solver.sim_params.multigrid_v_cycles = vcycles
+        
+        # Clear JIT cache since this affects the pressure solver
+        import jax
+        jax.clear_caches()
+        if hasattr(self.solver, '_jit_cache'):
+            self.solver._jit_cache.clear()
+        if hasattr(self.solver, '_step_jit'):
+            delattr(self.solver, '_step_jit')
+        
+        # Recompile step function with new V-cycles
+        self.solver._step_jit = self.solver.get_step_jit()
+        
+        print(f"Multigrid V-cycles updated to {vcycles}")
     
     def update_timestep(self) -> None:
         """Set a fixed timestep value."""
@@ -722,17 +804,7 @@ class ParameterHandlers:
             
             # Force recompilation
             self.solver._step_jit = jax.jit(self.solver._step)
-            
-            # Recreate visualization objects to prevent PlotDataItem deletion errors
-            try:
-                # Clear existing visualization objects
-                if hasattr(self.flow_viz, 'vel_outline') and self.flow_viz.vel_outline:
-                    self.flow_viz.vel_plot.removeItem(self.flow_viz.vel_outline)
-                if hasattr(self.flow_viz, 'vort_outline') and self.flow_viz.vort_outline:
-                    self.flow_viz.vort_plot.removeItem(self.flow_viz.vort_outline)
-            except Exception as viz_error:
-                print(f"Warning: Error clearing visualization objects: {viz_error}")
-        
+
         except Exception as dt_error:
             print(f"Error setting timestep: {dt_error}")
             # Ensure UI is in a usable state
@@ -752,10 +824,3 @@ class ParameterHandlers:
         if hasattr(self, 'refresh_timer'):
             self.refresh_timer.setInterval(int(1000 / vis_fps))
         print(f"Visualization rate set to {vis_fps} FPS")
-
-    def update_cylinder_radius(self) -> None:
-        """Update cylinder radius parameter."""
-        radius = self.control_panel.cylinder_radius_spinbox.value()
-        self.solver.geom.radius = radius
-        self.solver.geom.recompute_geometry()
-        print(f"Cylinder radius updated to {radius:.3f}")

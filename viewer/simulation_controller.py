@@ -39,6 +39,7 @@ class MetricsWorker(QObject):
         self.paused = False
         self.data_queue = queue.Queue(maxsize=2)  # Buffer of 2 frames
         self.thread = None
+        self.frame_count = 0
 
     def start(self):
         """Start the metrics computation thread"""
@@ -121,53 +122,64 @@ class MetricsWorker(QObject):
                     max_delta_v = np.max(np.abs(delta_v))
                     max_delta_total = np.maximum(max_delta_u, max_delta_v)
 
+                    # Calculate velocity change magnitude
+                    delta_mag = np.sqrt(delta_u**2 + delta_v**2)
+
                     u_rms = np.sqrt(np.sum(u_np**2) * dx * dy / (self.solver.grid.nx * self.solver.grid.ny))
                     v_rms = np.sqrt(np.sum(v_np**2) * dx * dy / (self.solver.grid.nx * self.solver.grid.ny))
                     vel_rms = np.sqrt(u_rms**2 + v_rms**2) + 1e-8
 
                     rel_delta = l2_delta_total / (vel_rms * np.sqrt(float(self.solver.grid.lx) * float(self.solver.grid.ly)))
 
-                    # Compute divergence
+                    # Compute divergence only in fluid region (mask > 0.5)
                     div_x = np.gradient(u_np, dx, axis=0)
                     div_y = np.gradient(v_np, dy, axis=1)
                     div = div_x + div_y
-                    max_div = np.max(np.abs(div))
-                    l2_div = np.sqrt(np.sum(div**2) * dx * dy)
+                    fluid_mask = (mask_np > 0.5)
+                    div_fluid = div * fluid_mask
+                    div_rms = np.sqrt(np.sum(div_fluid**2) / (np.sum(fluid_mask) + 1e-8))
+                    l2_div = np.sqrt(np.sum(div_fluid**2) * dx * dy)
 
                     error_metrics = {
                         'l2_change': float(l2_delta_total),
+                        'rms_change': float(l2_delta_total / np.sqrt(self.solver.grid.nx * self.solver.grid.ny)),
+                        'max_change': float(max_delta_total),
+                        'change_99p': float(np.percentile(delta_mag, 99)),
+                        'rel_change': float(rel_delta),
                         'l2_change_u': float(l2_delta_u),
                         'l2_change_v': float(l2_delta_v),
-                        'max_change': float(max_delta_total),
-                        'rel_change': float(rel_delta),
-                        'max_divergence': float(max_div),
+                        'rms_divergence': float(div_rms),  # Now stores RMS
                         'l2_divergence': float(l2_div),
                         'iteration': iteration
                     }
                 else:
                     error_metrics = {
                         'l2_change': 0.0,
+                        'rms_change': 0.0,
+                        'max_change': 0.0,
+                        'change_99p': 0.0,
+                        'rel_change': 0.0,
                         'l2_change_u': 0.0,
                         'l2_change_v': 0.0,
-                        'max_change': 0.0,
-                        'rel_change': 0.0,
-                        'max_divergence': 0.0,
+                        'rms_divergence': 0.0,  # Now stores RMS divergence
                         'l2_divergence': 0.0,
                         'iteration': iteration
                     }
 
                 # Compute airfoil metrics if enabled and frame skip allows
                 airfoil_metrics = None
+                self.frame_count += 1
                 if self.solver.compute_airfoil_metrics and self.solver.sim_params.flow_type == 'von_karman' and should_compute_metrics:
                     try:
                         X_np = np.array(self.solver.grid.X)
-                        stag_x = find_stagnation_point(u_np, v_np, mask_np, X_np, dx)
+                        stag_x = find_stagnation_point(u_np, v_np, mask_np, pressure_np, X_np, dx)
                         sep_x = find_separation_point(u_np, v_np, mask_np, X_np, dx, dy)
 
-                        drag, lift = compute_forces(u_np, v_np, pressure_np, mask_np,
-                                                  dx, dy, self.solver.flow.nu)
-
                         chord_length = getattr(self.solver.sim_params, 'naca_chord', 2.0)
+
+                        drag, lift, _, _ = compute_forces(u_np, v_np, pressure_np, mask_np,
+                                                        dx, dy, self.solver.flow.nu,
+                                                        chord_length=chord_length)
                         rho = 1.0
                         dynamic_pressure = 0.5 * rho * self.solver.flow.U_inf**2
                         cl = float(lift / (dynamic_pressure * chord_length)) if dynamic_pressure > 0 else 0.0
@@ -322,12 +334,15 @@ class SimulationWorker(QObject):
                     du_dx = jnp.gradient(u, axis=0) / dx
                     dv_dy = jnp.gradient(v, axis=1) / dy
                     div = du_dx + dv_dy
-                    max_div = float(jnp.max(jnp.abs(div)))
+                    # Only compute divergence in fluid region (mask > 0.5)
+                    fluid_mask = (self.solver.mask > 0.5)
+                    div_fluid = div * fluid_mask
+                    div_rms = float(jnp.sqrt(jnp.sum(div_fluid**2) / (jnp.sum(fluid_mask) + 1e-8)))
                 except Exception as div_error:
                     print(f"ERROR: Divergence calculation failed: {div_error}")
                     import traceback
                     traceback.print_exc()
-                    max_div = 0.0  # Fallback value
+                    div_rms = 0.0  # Fallback value
                 
                 # Prepare data for visualization (minimal processing) with error handling
                 try:
@@ -354,7 +369,7 @@ class SimulationWorker(QObject):
                 data = {
                     'time': self.solver.iteration * self.solver.dt,
                     'iteration': self.solver.iteration,
-                    'max_divergence': max_div,
+                    'rms_divergence': div_rms,  # Now stores RMS
                     'shared_buffers': self.shared_buffers  # Reference to shared memory
                 }
                 
@@ -401,6 +416,14 @@ class SimulationWorker(QObject):
         
         print("Simulation thread stopped")
     
+    def pause(self):
+        """Pause the simulation"""
+        self.paused = True
+
+    def resume(self):
+        """Resume the simulation"""
+        self.paused = False
+
     def recreate_shared_buffers(self, new_nx, new_ny):
         """Recreate shared memory buffers for new grid dimensions"""
         # Clean up old buffers
@@ -454,6 +477,7 @@ class SimulationController:
         self.metrics_worker = None
         self.latest_data = None
         self.latest_metrics = None
+        self.callbacks = None  # Store callbacks for reconnecting signals
         
         # Frame skipping controls (kept for compatibility with existing code)
         self.simulation_step_counter = 0
@@ -492,6 +516,9 @@ class SimulationController:
 
     def start_simulation(self, callbacks):
         """Start simulation in separate thread"""
+        # Store callbacks for reconnecting signals when metrics worker is restarted
+        self.callbacks = callbacks
+        
         try:
             # COMPLETELY stop any existing simulation
             if self.simulation_worker is not None:
@@ -505,18 +532,21 @@ class SimulationController:
                 except Exception:
                     pass  # Signals might not be connected
 
-                # Wait for thread to finish with proper timeout
+                # Wait for thread to finish with proper synchronization
                 import time
-                max_wait = 2.0  # Match the thread join timeout
-                wait_start = time.time()
-                while old_worker.thread and old_worker.thread.is_alive():
-                    if time.time() - wait_start > max_wait:
-                        print("Warning: Old simulation thread did not stop in time")
-                        break
-                    time.sleep(0.05)
+                if old_worker.thread and old_worker.thread.is_alive():
+                    for _ in range(50):  # 5 seconds max
+                        if not old_worker.thread.is_alive():
+                            break
+                        time.sleep(0.1)
+                    if old_worker.thread.is_alive():
+                        print("Warning: Old simulation thread did not stop in 5 seconds")
 
                 # Clear reference
                 self.simulation_worker = None
+            
+            # Clear stale data before restart
+            self.latest_data = None
 
             # Start metrics worker if not already running
             if self.metrics_worker is None:
@@ -580,7 +610,22 @@ class SimulationController:
         if self.metrics_worker is None:
             self.metrics_worker = MetricsWorker(self.solver)
             self.metrics_worker.start()
-            print("Metrics worker started")
+            
+            # Reconnect metrics_ready signal if callbacks are available
+            if self.callbacks and 'metrics_ready' in self.callbacks:
+                self.metrics_worker.metrics_ready.connect(
+                    self.callbacks['metrics_ready'], Qt.ConnectionType.QueuedConnection
+                )
+                print("Metrics worker started and signal reconnected")
+            else:
+                print("Metrics worker started (no callbacks to reconnect)")
+            
+            # Update simulation worker's reference to the new metrics worker
+            if self.simulation_worker:
+                self.simulation_worker.metrics_worker = self.metrics_worker
+                print("Simulation worker's metrics_worker reference updated")
+        else:
+            print("Metrics worker already running")
 
     def stop_metrics(self):
         """Stop metrics worker"""

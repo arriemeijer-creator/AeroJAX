@@ -12,9 +12,6 @@ class NACAHandler:
     
     def apply_naca_airfoil_settings(self) -> None:
         """Apply NACA airfoil configuration to the simulation."""
-        if not hasattr(self.control_panel, 'obstacle_combo') or not self.control_panel.obstacle_combo:
-            return
-        
         # Check if NACA controls are available
         if not hasattr(self.control_panel, 'chord_spinbox') or self.control_panel.chord_spinbox is None:
             print("NACA Error: chord_spinbox not available")
@@ -24,7 +21,7 @@ class NACAHandler:
         self.sim_controller.stop_simulation()
         
         try:
-            obstacle_type = self.control_panel.obstacle_combo.currentText()
+            obstacle_type = 'naca_airfoil'  # NACA is always the obstacle type when applying NACA settings
             naca_airfoil = self.control_panel.naca_combo.currentText()
             chord_length = self.control_panel.chord_spinbox.value()
             
@@ -57,9 +54,9 @@ class NACAHandler:
             print(f"NACA {naca_airfoil} applied: chord={chord_length}, angle={current_angle}°")
             
             # Update UI to match the applied angle
-            if hasattr(self.control_panel, 'angle_spinbox'):
+            if hasattr(self.control_panel, 'angle_spinbox') and self.control_panel.angle_spinbox is not None:
                 self.control_panel.angle_spinbox.setValue(current_angle)
-            if hasattr(self.control_panel, 'angle_slider'):
+            if hasattr(self.control_panel, 'angle_slider') and self.control_panel.angle_slider is not None:
                 slider_value = int(current_angle * 10.0)
                 self.control_panel.angle_slider.setValue(slider_value)
             
