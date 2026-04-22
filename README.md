@@ -4,10 +4,10 @@
 
 > **AeroJAX** is a high-performance, JAX-native CFD engine architected for real-time physics simulation, gradient-based optimization, and seamless neural operator integration. By combining rigorous numerical methods (staggered MAC grids) with automatic differentiation, it enables end-to-end differentiable workflows for shape optimization and physical AI research.
 
-**Demo Video:**
+
 ![Demo Animation](NACA_Airfoil.gif)
 
-**GUI Screenshot:**
+**The GUI**
 ![GUI Screenshot](GUI.png)
 
 **Key Dependencies:**
