@@ -5,7 +5,19 @@
 > **AeroJAX** is a high-performance, JAX-native CFD engine architected for real-time physics simulation, gradient-based optimization, and seamless neural operator integration. By combining rigorous numerical methods (staggered MAC grids) with automatic differentiation, it enables end-to-end differentiable workflows for shape optimization and physical AI research.
 
 
+[![JAX](https://img.shields.io/badge/JAX-0.9.2-9cf?logo=jax&logoColor=white)](https://jax.readthedocs.io/)
+[![PyQt6](https://img.shields.io/badge/PyQt6-6.8.1-41cd52?logo=qt&logoColor=white)](https://www.riverbankcomputing.com/static/Docs/PyQt6/)
+[![License](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://python.org)
+
+[![GitHub stars](https://img.shields.io/github/stars/arriemeijer-creator/AeroJAX?style=social)](https://github.com/arriemeijer-creator/AeroJAX)
+[![GitHub forks](https://img.shields.io/github/forks/arriemeijer-creator/AeroJAX?style=social)](https://github.com/arriemeijer-creator/AeroJAX)
+
+
+
 ![Demo Animation](NACA_Airfoil.gif)
+
+
 
 **The GUI**
 ![GUI Screenshot](GUI.png)
