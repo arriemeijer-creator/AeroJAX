@@ -1,15 +1,13 @@
-# Differentiable CFD-ML
+# AeroJAX
 
-A real-time JAX-based CFD framework for interactive incompressible flow simulation, immersed boundaries, and ML-ready workflows.
+**A differentiable, structure-preserving framework for real-time incompressible flow simulation, control, and inverse design. Built with JAX.**
 
-> Differentiable CFD-ML is a high-performance CFD framework for real-time incompressible flow simulation, live diagnostics, and rapid synthetic data generation for CFD–ML research.
+> **AeroJAX** is a high-performance, JAX-native CFD engine architected for real-time physics simulation, gradient-based optimization, and seamless neural operator integration. By combining rigorous numerical methods (staggered MAC grids) with automatic differentiation, it enables end-to-end differentiable workflows for shape optimization and physical AI research.
 
 **Demo Video:**
-
 ![Demo Animation](NACA_Airfoil.gif)
 
 **GUI Screenshot:**
-
 ![GUI Screenshot](GUI.png)
 
 **Key Dependencies:**
@@ -23,8 +21,8 @@ A real-time JAX-based CFD framework for interactive incompressible flow simulati
 ## Quick Start
 
 ```bash
-git clone https://github.com/arriemeijer-creator/JAX-differentiable-CFD
-cd JAX-differentiable-CFD
+git clone https://github.com/arriemeijer-creator/AeroJAX
+cd AeroJAX
 pip install -r requirements.txt
 python main.py
 ```
@@ -39,16 +37,13 @@ python main.py
 
 ## What Makes This Framework Distinct
 
-This framework combines:
+AeroJAX is designed to bridge the gap between classical numerical analysis and modern machine learning:
 
-- Real-time 2D incompressible CFD with interactive GUI control
-- Differentiable immersed boundary simulation via Brinkman penalization
-- Adaptive divergence-aware timestep control using PID feedback
-- Multi-solver pressure projection (FFT / CG / multigrid)
-- Live diagnostics (forces, divergence, enstrophy, pressure metrics)
-- High-throughput synthetic data generation for ML workflows
-- Decoupled simulation and rendering architecture for stable performance
-- Control-driven numerical stability rather than static CFL tuning
+- **Structure-Preserving Numerics**: Utilizes a staggered MAC grid to ensure mass conservation and eliminate pressure-velocity decoupling (checkerboard artifacts).
+- **End-to-End Differentiable**: Every solver step is JAX-native, allowing for `jax.grad` and `jax.vmap` across the full simulation for adjoint-based inverse design.
+- **Real-Time Inverse Design**: Morph geometries and optimize shapes live via differentiable immersed boundaries (Brinkman penalization) and smoothed Heaviside masks.
+- **Neural-Ready Architecture**: High-throughput synthetic data generation and latent-space acceleration hooks for geometric algebra and multiscale neural operators.
+- **Control-Driven Stability**: Adaptive divergence-aware timestep control using PID feedback instead of static CFL tuning.
 
 This makes it useful for:
 
@@ -61,15 +56,14 @@ This makes it useful for:
 
 ## Core Simulation Architecture
 
-### 1. Solver Design
+### 1. Solver Design & Numerics
 
 The framework implements a JAX-accelerated incompressible Navier–Stokes solver with:
 
-- Projection-based (fractional-step) pressure coupling
-- Explicit RK3 advection scheme
-- Structured Cartesian grid (2D)
-- Immersed boundary forcing via Brinkman penalization
-- Optional LES closures (Smagorinsky variants: constant or dynamic)
+- **Spatial Discretization:** Staggered Cartesian grid (MAC) for robust pressure-velocity coupling.
+- **Time Integration:** Explicit RK3 advection scheme with projection-based fractional-step coupling.
+- **Immersed Boundary:** Brinkman penalization for differentiable fluid-structure interaction.
+- **Pressure Projection:** Selectable solvers including FFT-based Poisson, Conjugate Gradient, and Multigrid.
 
 The solver is designed for real-time execution and parameter interactivity rather than batch-only workflows.
 
@@ -94,7 +88,10 @@ Geometry is represented using a continuous mask field:
 #### Supported geometries
 
 - Cylinders
-- NACA 4-digit airfoils
+- NACA 4-digit and 5-digit airfoils
+- Cow (simplified animal shape)
+- Three-cylinder array
+- Freeform (custom drawn obstacles)
 - Extensible parametric shapes
 
 ### 3. Adaptive Time Stepping (Divergence-PID Controller)
@@ -126,17 +123,17 @@ Timestep is additionally bounded by:
 
 #### Advection
 
-- Explicit RK3 scheme
+- Explicit RK3 scheme (collocated or MAC‑compatible)
 
 #### Pressure Projection (selectable)
 
 - FFT-based Poisson solver (periodic cases)
 - Conjugate Gradient solver
-- Multigrid solver
+- Multigrid solver (collocated and MAC versions)
 
 #### Spatial Discretization
 
-- Structured Cartesian grid
+- Structured Cartesian grid (collocated or MAC staggered)
 
 #### Typical operating resolutions:
 
@@ -193,16 +190,17 @@ This enables real-time visualization without repeated JAX → CPU → GUI copy o
 ### Geometry Parameters
 
 - Cylinder radius
-- NACA airfoil type
-- Chord length
-- Angle of attack
+- NACA airfoil type, chord length, angle of attack
+- Cow scale and position
+- Three-cylinder array parameters
+- Freeform mask
 - Spatial placement
 
 ### Flow Parameters
 
 - Reynolds number (Re)
 - Domain size
-- Inflow conditions
+- Inflow conditions (U_inf)
 
 ### Numerical Parameters
 
@@ -250,7 +248,7 @@ Computed in real time
 
 - Start / pause / reset
 - Grid resizing
-- Flow regime switching
+- Flow regime switching (von Kármán, lid-driven cavity, Taylor–Green)
 
 ### Physical Controls
 
@@ -261,7 +259,7 @@ Computed in real time
 
 ### Numerical Controls
 
-- Solver type selection
+- Solver type selection (collocated / MAC)
 - LES toggle
 - epsilon and eta tuning
 - Adaptive timestep settings
@@ -278,7 +276,7 @@ Computed in real time
 
 ## Performance Characteristics
 
-Differentiable CFD-ML is designed for stable real-time performance across a wide range of resolutions, with simulation throughput largely independent of GUI rendering load due to the decoupled architecture.
+AeroJAX is designed for stable real-time performance across a wide range of resolutions, with simulation throughput largely independent of GUI rendering load due to the decoupled architecture.
 
 ### Typical CPU performance
 
@@ -348,17 +346,17 @@ Differentiable CFD-ML is designed for stable real-time performance across a wide
 
 - Real-time 2D incompressible CFD solver
 - PyQt6 interactive GUI
-- Immersed boundaries (cylinders + NACA airfoils + Freeform)
+- Immersed boundaries (cylinders, NACA airfoils, cow, three‑cylinder array, freeform)
 - Divergence-PID adaptive timestep controller
 - Brinkman penalization system
 - Threaded simulation architecture
 - Shared memory visualization pipeline
 - Export and recording tools
+- Inverse design module (WIP, differentiable optimization)
 
 ---
 
 ## Project Structure
-
 
 ```
 GitHub/
@@ -443,13 +441,12 @@ GitHub/
         └── sdf_visualization.py (123 lines)
 ```
 
-**Core solver (differentiable, JAX):** ~3,500 lines
-**Obstacles:** ~1,016 lines
-**GUI & visualization:** ~8,000 lines
-**Advection & pressure solvers:** ~998 lines
-**Inverse design:** ~1,725 lines
+**Core solver (differentiable, JAX):** ~3,500 lines  
+**Obstacles:** ~1,016 lines  
+**GUI & visualization:** ~8,000 lines  
+**Advection & pressure solvers:** ~998 lines  
+**Inverse design:** ~1,725 lines  
 **Total functional code:** ~15,239 lines
-
 
 ---
 
@@ -461,7 +458,7 @@ GNU Lesser General Public License v3.0
 
 ## Author
 
-Arno Meijer
+Arno Meijer  
 Mechanical Engineer | CFD–ML Systems Developer
 
 ---
@@ -469,11 +466,9 @@ Mechanical Engineer | CFD–ML Systems Developer
 ## Citation
 
 ```bibtex
-@misc{meijer2026differentiablecfd,
+@misc{meijer2026aerojax,
   author = {Meijer, Arno},
-  title = {JAX-Based Differentiable CFD Framework},
+  title = {AeroJAX: Differentiable, Structure-Preserving CFD Framework},
   year = {2026},
-  url = {https://github.com/arriemeijer-creator/JAX-differentiable-CFD}
+  url = {https://github.com/arriemeijer-creator/AeroJAX}
 }
-```
-
