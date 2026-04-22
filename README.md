@@ -35,6 +35,20 @@ python main.py
 
 ---
 
+## Capabilities at a glance
+
+| Category | Capabilities |
+|----------|---------------|
+| **Solvers** | Collocated / MAC staggered, RK3/RK2, FFT/CG/Multigrid pressure |
+| **Turbulence** | LES (dynamic/smagorinsky), hyper-viscosity |
+| **Obstacles** | Cylinder, NACA (4/5-digit), Cow, 3-cylinder, freeform draw |
+| **Controls** | Lockable Re/U/ν, adaptive CFL dt, Brinkman penalization |
+| **Diagnostics** | CL/CD, stagnation/separation, Cp_min, wake deficit, L2/max/relative errors, CSV export |
+| **GUI** | Real-time velocity/vorticity/pressure/dye plots, streamlines, quivers, video export, light/dark themes |
+| **Performance** | 297–31 FPS (512×96 → 2084×384), decoupled threads, shared memory |
+
+---
+
 ## What Makes This Framework Distinct
 
 AeroJAX is designed to bridge the gap between classical numerical analysis and modern machine learning:
@@ -301,7 +315,7 @@ AeroJAX is designed for stable real-time performance across a wide range of reso
 
 ### Validated against
 
-- Lid-driven cavity flow
+- Lid-driven cavity flow (currently removed because of stability issues)
 - Taylor–Green vortex decay
 - Von Kármán vortex shedding
 
@@ -339,20 +353,6 @@ AeroJAX is designed for stable real-time performance across a wide range of reso
 - Tight coupling between simulation and observation
 - Real-time feedback loops for stability and control
 - Differentiability-first JAX-native design
-
----
-
-## Capabilities
-
-- Real-time 2D incompressible CFD solver
-- PyQt6 interactive GUI
-- Immersed boundaries (cylinders, NACA airfoils, cow, three‑cylinder array, freeform)
-- Divergence-PID adaptive timestep controller
-- Brinkman penalization system
-- Threaded simulation architecture
-- Shared memory visualization pipeline
-- Export and recording tools
-- Inverse design module (WIP, differentiable optimization)
 
 ---
 
