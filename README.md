@@ -90,7 +90,7 @@ Since this was developed on a CPU-only stack, the architecture is strictly optim
 |-----------------|--------------|----------------------|
 | 512 × 96        | ~297 FPS     | ~170 FPS              |
 | 1024 × 192      | ~131 FPS     | ~91 FPS               |
-| 2084 × 384      | ~37 FPS      | ~31 FPS               |
+| 2048 × 384      | ~37 FPS      | ~31 FPS               |
 
 ## Known Limitations
 
