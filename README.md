@@ -58,7 +58,7 @@ AeroJAX is a physics sandbox designed to be visualization-agnostic—if the flow
 - **Flow Control**: Lockable Reynolds number (Re), Viscosity, or U_inf inputs (the engine auto-calculates the third)
 - **Boundary Conditions**: Toggleable slip / no-slip conditions
 
-### Neural Operator Integration - AVAILABLE ON NEXT RELEASE
+### Neural Operator Integration *(coming in v2.0)*
 
 AeroJAX v2.0 will include a built-in training pipeline for neural pressure solvers (CNNs, Linear, and Latent-space architectures), allowing users to generate parameterized training data on-the-fly, train custom operators, and hot-swap them into the simulation loop to replace traditional Poisson solvers.
 
