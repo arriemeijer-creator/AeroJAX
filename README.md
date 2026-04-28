@@ -7,6 +7,7 @@
 ![NACA Airfoil Simulation](NACA_Airfoil.gif)
 
 [![JAX](https://img.shields.io/badge/JAX-0.9.2-9cf)]
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19857239.svg)](https://doi.org/10.5281/zenodo.19857239)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.8.1-41cd52)]
 [![License](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)]
 
@@ -14,20 +15,20 @@
 
 
 ## What makes AeroJAX different?
-Most CFD software is batch‑oriented: simulations are configured, run to completion, and results are analysed afterwards. If you want to change the mesh or try a different turbulence model - you start over.
+Most CFD software is batch‑oriented: simulations are configured, run to completion, and analysed afterwards. Changing anything means starting over.
 
-AeroJAX is an interactive CFD framework in which solver parameters, boundary conditions, and immersed geometries can be modified during runtime without restarting the simulation.  Most parameters can be modified during time integration with immediate effect. You can:
+AeroJAX is an interactive CFD framework in which solver parameters, boundary conditions, and immersed geometries can be modified during runtime — without restarting the simulation.
 
-- Draw an obstacle with your mouse - the solver injects it on the next timestep using Brinkman penalisation.
+- Draw an obstacle with your mouse — the solver injects it on the next timestep using Brinkman penalisation.
 - Drag a NACA airfoil across the domain with a slider and watch the wake evolve in real time.
-- Pressure solvers (FFT, Conjugate Gradient, Multigrid, or Neural Operator) can be swapped without restarting the simulation.
+- Pressure solvers (FFT, Conjugate Gradient, Multigrid, or Neural Operator) can be swapped mid-simulation without restarting.
 - Toggle LES models (Smagorinsky / dynamic Smagorinsky) on the fly.
 - Inject dye at any point and watch it advect.
 - Record video or export frames with one click.
 
 AeroJAX is built on JAX, making each solver step end-to-end differentiable. You can run gradient‑based inverse design (optimise an airfoil shape to minimise drag) without writing a separate adjoint solver.
 
-The framework is CPU‑optimised for real-time performance. Typical performance reaches ~297 FPS at 512×96 on a laptop CPU. No GPU required for smaller grids.
+The framework is CPU‑optimised for real-time performance. Typical performance reaches ~297 FPS at 512×96 on a laptop CPU. No GPU is required for smaller grids.
 
 ## Quick start
 
@@ -69,7 +70,7 @@ A semi-transparent overlay provides instant access to the most frequent interact
 
 - Start / Pause / Reset
 - Inverse Design – experimental module for adjoint‑based shape optimisation
-- Thermal – placeholder for future heat transfer - Boussinesq-approximation buoyancy flow is already conceptually implemented.
+- Thermal – placeholder for future heat transfer (Boussinesq approximation buoyancy flow is already conceptually implemented).
 - Theme toggle – light / dark mode
 
 ### Grid & solver
@@ -96,7 +97,7 @@ A semi-transparent overlay provides instant access to the most frequent interact
 | Hyper ν | Hyperviscosity (0‑0.05) – improves stability for under‑resolved turbulence. |
 | Fast Mode (RK2) | Switches from RK3 to RK2 – faster but less accurate. |
 | LES | Enable, choose Smagorinsky or dynamic Smagorinsky. Apply live. |
-| Pressure Solver | Multigrid, CG (iteration-dependent; slower for poorly conditioned systems), FFT (for periodic BCs like LDC), Jacobi – requires sim restart.|
+| Pressure Solver | Multigrid, CG (iteration-dependent; slower for poorly conditioned systems), FFT (for periodic BCs like LDC), Jacobi – requires sim restart. |
 
 ### Boundary conditions
 
@@ -107,7 +108,7 @@ A semi-transparent overlay provides instant access to the most frequent interact
 
 ### Obstacles (all live)
 
-- Type: Cylinder (single), NACA airfoil (4‑/5‑digit), Cow (arbitrary demonstration geometry), Three‑cylinder array.
+- Type: Cylinder (single), NACA airfoil (4‑/5‑digit), Cow (arbitrary complex geometry demo), Three‑cylinder array.
 - NACA: Choose from selected 4‑digit and 5‑digit series. Set chord length, angle of attack (AoA) with slider/spinbox.
 - Cylinder: Radius (live preview as you input).
 - Cylinder array: Diameter, spacing between centres.
@@ -117,7 +118,7 @@ A semi-transparent overlay provides instant access to the most frequent interact
 ### Time stepping
 
 - dt (fixed) – apply live.
-- Adaptive dt – PID controller based on divergence error with CFL monitoring (work in progress).
+- Adaptive dt – PID controller based on divergence error with CFL monitoring (experimental).
 
 ### Visualisation
 
@@ -151,7 +152,7 @@ A semi-transparent overlay provides instant access to the most frequent interact
 - Select operator: Choose from any .py file in neural_operators/.
 - Architecture: Linear, NonLinear, Advanced (FNO‑like).
 - Train: Set epochs, learning rate, batch size, cancel anytime. Progress bar.
-- Load trained model: Replace the pressure solver with a neural operator within the simulation loop.
+- Load trained model: Replace the pressure solver with a neural operator directly inside the simulation loop.
 
 ### Export & recording
 
@@ -163,13 +164,13 @@ A semi-transparent overlay provides instant access to the most frequent interact
 
 - Navier‑Stokes (incompressible) finite‑difference solver on collocated or MAC grid.
 - Lattice Boltzmann (D2Q9 / D2Q7) with BGK or MRT collision (low-Mach regime).
-- Advection: RK3, RK2, multiple specialised variants.
+- Advection: RK3, RK2, multiple specialised schemes.
 - Pressure projection: FFT (periodic), Conjugate Gradient, Multigrid (V‑cycle).
 - Turbulence: Smagorinsky & dynamic Smagorinsky LES.
 - Immersed boundaries: Brinkman penalisation with smooth Heaviside mask.
-- Differentiability: Every step is JAX‑native. Use jax.grad to optimise shapes / controls.  This enables gradietn-based inverse design and future differentiable control workflows.
-- Performance: Decoupled solver / render / metrics threads with shared‑memory zero‑copy buffers. CPU‑optimised – runs at 297 FPS (512×96) on a laptop CPU.
-- Live parameter updates: Redux‑style state management. The solver checks for changes each timestep and re‑compiles only when necessary.
+- Differentiability: Every step is JAX‑native. Use jax.grad to optimise shapes and controls.  This enables gradient-based inverse design and future differentiable control workflows.
+- Performance: Decoupled solver / render / metrics threads with shared‑memory zero‑copy buffers. CPU‑optimised – ~297 FPS (512×96) on a laptop CPU.
+- Live parameter updates: Redux‑style state management. The solver checks for changes each timestep and only re-compiles when necessary.
 
 ## Performance benchmarks (CPU)
 
@@ -184,7 +185,7 @@ A semi-transparent overlay provides instant access to the most frequent interact
 ## Limitations
 
 - 2D only – designed for rapid prototyping and neural operator research.
-- Force coefficients (CL, CD) are qualitative – Brinkman penalisation prevents accurate pressure integration. Use for optimisation trends, not absolute values.
+- Force coefficients (CL, CD) are trend-accurate but not quantitatively reliable – Brinkman penalisation prevents accurate pressure integration.
 - Moderate Reynolds numbers – best for Re < 10,000 (laminar to early turbulent).
 - CPU‑focused – GPU execution is supported, but the current architecture is tuned for workstations without dedicated GPUs.
 - LBM operates in the low-Mach regime; accuracy degrades if this constraint is violated.
