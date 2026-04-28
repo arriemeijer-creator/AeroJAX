@@ -1,30 +1,35 @@
 # AeroJAX
 
-**A real-time, JAX-native CFD framework for interactive flow research, control, and inverse design.**
+*A real-time, JAX-native CFD framework for interactive flow research, control, and inverse design.*
 
-AeroJAX evolved from a need for high-throughput synthetic data for Neural Operators (FNOs, CNNs) into a full-scale research platform. It bridges the gap between classical numerical analysis and modern ML workflows, providing a fast environment where physical parameters and solver architectures can be interrogated in real-time.
-
-[![JAX](https://img.shields.io/badge/JAX-0.9.2-9cf?logo=jax&logoColor=white)](https://jax.readthedocs.io/)
-[![PyQt6](https://img.shields.io/badge/PyQt6-6.8.1-41cd52?logo=qt&logoColor=white)](https://www.riverbankcomputing.com/static/Docs/PyQt6/)
-[![License](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+<div align="center">
 
 ![NACA Airfoil Simulation](NACA_Airfoil.gif)
 
-## Why AeroJAX is Distinct
+[![JAX](https://img.shields.io/badge/JAX-0.9.2-9cf)]
+[![PyQt6](https://img.shields.io/badge/PyQt6-6.8.1-41cd52)]
+[![License](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)]
 
-Most CFD suites are built for batch processing on massive clusters. AeroJAX is built for **live interrogation**:
+</div>
 
-- **Optimization-Ready:** Every solver step is JAX-native and end-to-end differentiable. This enables adjoint-based inverse design and shape optimization loops directly within the framework.
-- **Interactive Physics Sandbox:** Unlike traditional solvers, you can hand-draw obstacles, toggle LES models, or swap pressure solvers mid-simulation to observe numerical stability and flow transitions instantly.
-- **CPU-First Engineering:** Architected to deliver high-fidelity results on standard workstations. By decoupling the JAX simulation core from the rendering thread, the solver maintains high throughput even at resolutions up to ~3000x600 without a GPU.
-- **ML Data Engine:** While it functions as a standalone research tool, its speed and parametric control make it a primary engine for generating physics-consistent datasets for Neural Operator research.
 
----
+## What makes AeroJAX different?
+Most CFD software is batch‑oriented: simulations are configured, run to completion, and results are analysed afterwards. If you want to change the mesh or try a different turbulence model - you start over.
 
-## The GUI
-![GUI Screenshot](GUI.png)
+AeroJAX is an interactive CFD framework in which solver parameters, boundary conditions, and immersed geometries can be modified during runtime without restarting the simulation.  Most parameters can be modified during time integration with immediate effect. You can:
 
-## Quick Start
+- Draw an obstacle with your mouse - the solver injects it on the next timestep using Brinkman penalisation.
+- Drag a NACA airfoil across the domain with a slider and watch the wake evolve in real time.
+- Pressure solvers (FFT, Conjugate Gradient, Multigrid, or Neural Operator) can be swapped without restarting the simulation.
+- Toggle LES models (Smagorinsky / dynamic Smagorinsky) on the fly.
+- Inject dye at any point and watch it advect.
+- Record video or export frames with one click.
+
+AeroJAX is built on JAX, making each solver step end-to-end differentiable. You can run gradient‑based inverse design (optimise an airfoil shape to minimise drag) without writing a separate adjoint solver.
+
+The framework is CPU‑optimised for real-time performance. Typical performance reaches ~297 FPS at 512×96 on a laptop CPU. No GPU required for smaller grids.
+
+## Quick start
 
 ```bash
 git clone https://github.com/arriemeijer-creator/AeroJAX
@@ -33,83 +38,160 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## The GUI
+
+<div align="center">
+
+![GUI Screenshot](GUI.png)
+
+</div>
+
 ### First run tips
 
-- Start with 512×96 grid for real-time performance
-- Try von_karman flow with a NACA 2412 airfoil
-- Enable "Adaptive dt" to see the PID controller in action
+- Start with 512×96 grid for real‑time performance.
+- Try the default initialized von Kármán with NACA 0012 airfoil at 10° AoA.
+- Enable "Adaptive dt" to see the PID controller in action.
 
-## Technical Capabilities
+## What you can control
 
-AeroJAX is a physics sandbox designed to be visualization-agnostic—if the flow doesn't look right, the physics aren't right. It allows for hot-swapping numerical and physical parameters on the fly.
+The UI is organised into collapsible panels. Everything below can be changed mid‑simulation unless noted.
 
-### Solver & Numerics
+### Floating Quick-Control Bar
+A semi-transparent overlay provides instant access to the most frequent interactions without needing to navigate the sidebar:
 
-- **Discretization**: Toggle between Collocated and MAC staggered grids
-- **Integrators**: Explicit RK3 and RK2 schemes
-- **Pressure Projection**: Selectable FFT, Conjugate Gradient, and Multigrid Poisson solvers
-- **Precision**: Global float32 / float64 toggles for performance vs. stability testing
-- **Stability**: Closed-loop Adaptive CFL control using a PID controller that modulates dt based on real-time divergence error
+- **Playback:** Instant Start (▶), Pause (⏸), and Reset (↺).
+- **Layer Toggles:** Hot-swap visibility for Velocity, Divergence, Vorticity, Pressure, and Dye layers.
+- **Diagnostics Toggles:** One-click activation of Error Metrics, Airfoil Metrics, and Profiling Overlays.
+- **Live Colormaps:** Change colormaps for V, ω, and P on the fly to highlight different physical features.
+- **Precision Dye Injection:** Dual-slider (X, Y) control for real-time scalar tracer injection.
 
-### Obstacle System & Interactivity
+### Simulation control (top bar)
 
-- **Parametric Geometries**: Instant generation of Cylinders, NACA 4/5-digit airfoils, and 3-cylinder arrays
-- **Freeform Draw**: Draw custom masks via Pygame; the engine instantly injects the geometry into the domain using Brinkman penalization
-- **Flow Control**: Lockable Reynolds number (Re), Viscosity, or U_inf inputs (the engine auto-calculates the third)
-- **Boundary Conditions**: Toggleable slip / no-slip conditions
+- Start / Pause / Reset
+- Inverse Design – experimental module for adjoint‑based shape optimisation
+- Thermal – placeholder for future heat transfer - Boussinesq-approximation buoyancy flow is already conceptually implemented.
+- Theme toggle – light / dark mode
 
-### Neural Operator Integration *(coming in v2.0)*
+### Grid & solver
 
-AeroJAX v2.0 will include a built-in training pipeline for neural pressure solvers (CNNs, Linear, and Latent-space architectures), allowing users to generate parameterized training data on-the-fly, train custom operators, and hot-swap them into the simulation loop to replace traditional Poisson solvers.
+| Panel | What you can change |
+|-------|---------------------|
+| Grid Size | Nx, Ny (64‑4096 / 32‑2048) – requires sim restart |
+| Grid Type | Collocated or MAC (staggered) – sim restart |
+| Solver Type | Navier‑Stokes or Lattice Boltzmann (D2Q9/D2Q7) - enables direct solver-to-solver comparison under identical flow conditions – sim restart required |
+| Precision | float32 / float64 – GUI reload |
 
-### Turbulence & Advanced Physics
+### Flow parameters
 
-- **LES Modeling**: Support for Dynamic/Smagorinsky Large Eddy Simulation and hyper-viscosity
-- **Transport**: Scalar dye injection and particle injection for flow visualization
-- **Domain Presets**: Quick-load for Lid-Driven Cavity (LDC) and Taylor-Green Vortex (TGV) cases
+| Panel | What you can change |
+|-------|---------------------|
+| Reynolds Number | Lock any two of U_inf, ν, Re – the third auto‑updates. Apply live. |
+| Flow Type | von Kármán, Lid-Driven Cavity Flow, Taylor‑Green Vortex – sim restart. |
 
-### Diagnostics & Visualization
+### Solver parameters
 
-- **Live Aerodynamics**: Real-time calculation of C<sub>L</sub>, C<sub>D</sub>, C<sub>p_min</sub>, and wake deficit
-  - *Numerical Note*: Due to the nature of Brinkman penalization and smoothed Heaviside masks, conventional pressure-integration methods for force coefficients are unreliable. AeroJAX utilizes a Circulation-based C<sub>L</sub> (via Kutta-Joukowski theorem) and Momentum Deficit-based C<sub>D</sub> to ensure robust aerodynamic metrics.
-- **Flow Physics**: Automatic tracking of stagnation and separation lines
-- **Interactivity**: Info-on-hover diagnostics, sliders for obstacle positioning, and log-based color scale toggles
-- **Export**: Video export functionality and CSV diagnostic logging
+| Control | What it does |
+|---------|--------------|
+| Multigrid V‑cycles | Number of multigrid cycles (1‑10). Apply live. |
+| Hyper ν | Hyperviscosity (0‑0.05) – improves stability for under‑resolved turbulence. |
+| Fast Mode (RK2) | Switches from RK3 to RK2 – faster but less accurate. |
+| LES | Enable, choose Smagorinsky or dynamic Smagorinsky. Apply live. |
+| Pressure Solver | Multigrid, CG (iteration-dependent; slower for poorly conditioned systems), FFT (for periodic BCs like LDC), Jacobi – requires sim restart.|
 
-## Performance & Architecture
+### Boundary conditions
 
-Since this was developed on a CPU-only stack, the architecture is strictly optimized to maximize throughput:
+| Control | What it does |
+|---------|--------------|
+| Slip Walls | Toggle between no‑slip and free‑slip on domain walls. |
+| Mask ε | Brinkman penalisation sharpness (0.01‑1.0). Higher = sharper but stiffer. |
 
-- **Decoupled Pipeline**: The JAX simulation core is isolated from the rendering thread to prevent visualization from throttling solver FPS
-- **State Management**: Redux-style state management ensures predictable GUI behavior under heavy computational load
-- **Data Pipeline**: Uses shared-memory buffers for zero-copy field transfers between the solver and the PyQt6/pyqtgraph visualizer
+### Obstacles (all live)
 
-### Benchmarks (Tested on CPU)
+- Type: Cylinder (single), NACA airfoil (4‑/5‑digit), Cow (arbitrary demonstration geometry), Three‑cylinder array.
+- NACA: Choose from selected 4‑digit and 5‑digit series. Set chord length, angle of attack (AoA) with slider/spinbox.
+- Cylinder: Radius (live preview as you input).
+- Cylinder array: Diameter, spacing between centres.
+- Position: X and Y sliders – drag the obstacle across the domain live.
+- Draw custom obstacle: Click and draw a shape with your mouse in the PyGame drawing window. The SDF generator injects it immediately.
 
-| Grid Resolution | Solver + Viz | With Full Diagnostics |
-|-----------------|--------------|----------------------|
-| 512 × 96        | ~297 FPS     | ~170 FPS              |
-| 1024 × 192      | ~131 FPS     | ~91 FPS               |
-| 2048 × 384      | ~37 FPS      | ~31 FPS               |
+### Time stepping
 
-## Known Limitations
+- dt (fixed) – apply live.
+- Adaptive dt – PID controller based on divergence error with CFL monitoring (work in progress).
 
-- **2D only**: AeroJAX is designed for 2D flow research and rapid prototyping
-- **Force coefficients are qualitative**: Due to Brinkman penalization, C<sub>L</sub>/C<sub>D</sub> values are useful for relative comparison and optimization trends, not absolute prediction
-- **Moderate Reynolds numbers**: Best suited for Re < 10,000 (laminar to early turbulent regimes)
-- **CPU-focused**: While JAX supports GPUs, the architecture is specifically optimized for workstation CPUs
+### Visualisation
 
-## Project Structure
+| Control | What it does |
+|---------|--------------|
+| Frame skip | Render every N‑th solver frame – improves UI responsiveness. |
+| Target FPS | Limits visualisation framerate to save CPU. |
+| Show ... | Toggle velocity, vorticity, pressure, dye, particle mode (computationally expensive due to particle advection), SDF mask, streamlines, quivers – all live. |
+| Log / Spatial / Adaptive | Colour scale modes. Adaptive auto‑adjusts range to current data. |
+| Smooth | Upscales low‑res fields for cleaner display 1x (default) to 10x. Note: this does NOT enhance physics - it uses bilinear interpolation to increase visual fidelity. |
+| Colormaps | Separate dropdowns for velocity, vorticity, pressure. Many CET and PAL options. |
+| Auto‑scale | One‑click rescaling for each field or all at once. |
 
-- `solver/`: Core JAX-accelerated Navier-Stokes kernels and Brinkman penalization
-- `pressure_solvers/`: Multigrid, FFT, and CG implementations
-- `viewer/`: PyQt6 GUI components and Redux state logic
-- `obstacles/`: Parametric NACA generators and freeform drawing logic
-- `inverse_design_WIP/`: Experimental module for adjoint-based shape optimization
+### Dye injection
+
+- X / Y position (spinbox or sliders)
+- Amount (0‑100%)
+- Inject dye – adds a scalar tracer that advects with the flow.
+
+### Diagnostics & metrics
+
+| Panel | What you get |
+|-------|--------------|
+| Simulation Info | Solver status, simulation time, dt, RMS divergence, Sim FPS, Vis FPS. |
+| Error Metrics | L2 change, RMS change, max change, 99th percentile change, relative change, component L2 changes. Enable/disable to save performance. Save all history to CSV. |
+| Airfoil Metrics | CL, CD, Strouhal number, stagnation point (in chord fractions), separation point, Cp_min, wake deficit. Toggle on/off. Markers overlay on visualisation. Copy all metrics to clipboard. |
+
+### Neural Operator training (experimental)
+
+- Generate dataset: Run simulation for N steps, save chosen fields (u, v, p, mask, divergence) to .npz.
+- Select operator: Choose from any .py file in neural_operators/.
+- Architecture: Linear, NonLinear, Advanced (FNO‑like).
+- Train: Set epochs, learning rate, batch size, cancel anytime. Progress bar.
+- Load trained model: Replace the pressure solver with a neural operator within the simulation loop.
+
+### Export & recording
+
+- Export Frame – save current visualisation as PNG.
+- Record – toggle video recording (saves to disk).
+- Save State – not yet implemented.
+
+## Numerical methods & Solver details
+
+- Navier‑Stokes (incompressible) finite‑difference solver on collocated or MAC grid.
+- Lattice Boltzmann (D2Q9 / D2Q7) with BGK or MRT collision (low-Mach regime).
+- Advection: RK3, RK2, multiple specialised variants.
+- Pressure projection: FFT (periodic), Conjugate Gradient, Multigrid (V‑cycle).
+- Turbulence: Smagorinsky & dynamic Smagorinsky LES.
+- Immersed boundaries: Brinkman penalisation with smooth Heaviside mask.
+- Differentiability: Every step is JAX‑native. Use jax.grad to optimise shapes / controls.  This enables gradietn-based inverse design and future differentiable control workflows.
+- Performance: Decoupled solver / render / metrics threads with shared‑memory zero‑copy buffers. CPU‑optimised – runs at 297 FPS (512×96) on a laptop CPU.
+- Live parameter updates: Redux‑style state management. The solver checks for changes each timestep and re‑compiles only when necessary.
+
+## Performance benchmarks (CPU)
+
+*Benchmarks include full solver stepping and rendering.*
+
+| Grid resolution | Solver + rendering | With full diagnostics |
+|-----------------|-------------------|----------------------|
+| 512 × 96 | ~297 FPS | ~170 FPS |
+| 1024 × 192 | ~131 FPS | ~91 FPS |
+| 2048 × 384 | ~37 FPS | ~31 FPS |
+
+## Limitations
+
+- 2D only – designed for rapid prototyping and neural operator research.
+- Force coefficients (CL, CD) are qualitative – Brinkman penalisation prevents accurate pressure integration. Use for optimisation trends, not absolute values.
+- Moderate Reynolds numbers – best for Re < 10,000 (laminar to early turbulent).
+- CPU‑focused – GPU execution is supported, but the current architecture is tuned for workstations without dedicated GPUs.
+- LBM operates in the low-Mach regime; accuracy degrades if this constraint is violated.
 
 ## License
 
-GNU Lesser General Public License v3.0
+LGPL v3.0 – you can use it in proprietary software as long as you release modifications to the library itself.
 
 ## Author
 
