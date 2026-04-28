@@ -51,24 +51,43 @@ class VisualizationControls(CollapsibleGroupBox):
         self.apply_vis_fps_btn.setMaximumWidth(60)
         layout.addWidget(self.apply_vis_fps_btn, 1, 2)
 
-        # Row 2: Display toggles - horizontal layout within grid cell
+        # Row 1.5: Profiling overlay toggle
+        self.show_profiling_checkbox = QCheckBox("Show Profiling Overlay")
+        self.show_profiling_checkbox.setChecked(False)
+        self.show_profiling_checkbox.setToolTip("Display timing information in overlay")
+        layout.addWidget(self.show_profiling_checkbox, 2, 0, 1, 3)  # Span all columns
+
+        # Row 3: Display toggles - horizontal layout within grid cell
         display_toggle_row = QHBoxLayout()
         self.show_velocity_checkbox = QCheckBox("Velocity")
         self.show_velocity_checkbox.setChecked(True)
         self.show_vorticity_checkbox = QCheckBox("Vorticity")
         self.show_vorticity_checkbox.setChecked(True)
+        self.show_pressure_checkbox = QCheckBox("Pressure")
+        self.show_pressure_checkbox.setChecked(True)
+        self.show_dye_checkbox = QCheckBox("Dye")
+        self.show_dye_checkbox.setChecked(True)
+        self.particle_mode_checkbox = QCheckBox("Particles")
+        self.particle_mode_checkbox.setChecked(False)
+        self.particle_mode_checkbox.setToolTip("Toggle between dye field and Lagrangian tracer particles")
         self.show_sdf_checkbox = QCheckBox("SDF Mask")
         self.show_sdf_checkbox.setChecked(False)
         self.show_streamlines_checkbox = QCheckBox("Streamlines")
         self.show_streamlines_checkbox.setChecked(False)
+        self.show_quivers_checkbox = QCheckBox("Quivers")
+        self.show_quivers_checkbox.setChecked(False)
         display_toggle_row.addWidget(self.show_velocity_checkbox)
         display_toggle_row.addWidget(self.show_vorticity_checkbox)
+        display_toggle_row.addWidget(self.show_pressure_checkbox)
+        display_toggle_row.addWidget(self.show_dye_checkbox)
+        display_toggle_row.addWidget(self.particle_mode_checkbox)
         display_toggle_row.addWidget(self.show_sdf_checkbox)
         display_toggle_row.addWidget(self.show_streamlines_checkbox)
+        display_toggle_row.addWidget(self.show_quivers_checkbox)
         display_toggle_row.addStretch()
-        layout.addLayout(display_toggle_row, 2, 0, 1, 3)  # Span all columns
+        layout.addLayout(display_toggle_row, 3, 0, 1, 3)  # Span all columns
 
-        # Row 3: Color scale options - horizontal layout within grid cell
+        # Row 4: Color scale options - horizontal layout within grid cell
         colorscale_row = QHBoxLayout()
         self.log_colorscale_checkbox = QCheckBox("Log Color Scale")
         self.log_colorscale_checkbox.setChecked(True)
@@ -81,62 +100,68 @@ class VisualizationControls(CollapsibleGroupBox):
         colorscale_row.addWidget(self.spatial_colorscale_checkbox)
         colorscale_row.addWidget(self.adaptive_colorscale_checkbox)
         colorscale_row.addStretch()
-        layout.addLayout(colorscale_row, 3, 0, 1, 3)  # Span all columns
+        layout.addLayout(colorscale_row, 4, 0, 1, 3)  # Span all columns
 
-        # Row 4: Visualization smoothing
-        layout.addWidget(QLabel("Smooth:"), 4, 0)
+        # Row 5: Visualization smoothing
+        layout.addWidget(QLabel("Smooth:"), 5, 0)
         self.upscale_slider = QSlider(Qt.Orientation.Horizontal)
         self.upscale_slider.setRange(1, 10)
         self.upscale_slider.setValue(1)
         self.upscale_slider.setMaximumWidth(120)
-        layout.addWidget(self.upscale_slider, 4, 1)
+        layout.addWidget(self.upscale_slider, 5, 1)
         self.upscale_label = QLabel("1x")
-        layout.addWidget(self.upscale_label, 4, 2)
+        layout.addWidget(self.upscale_label, 5, 2)
 
-        # Row 5: Velocity colormap
-        layout.addWidget(QLabel("Velocity colormap:"), 5, 0)
+        # Row 6: Velocity colormap
+        layout.addWidget(QLabel("Velocity colormap:"), 6, 0)
         self.velocity_colormap_combo = QComboBox()
         self.velocity_colormap_combo.setMaximumWidth(150)
         self._populate_velocity_colormaps()
-        layout.addWidget(self.velocity_colormap_combo, 5, 1, 1, 2)  # Span 2 columns
+        layout.addWidget(self.velocity_colormap_combo, 6, 1, 1, 2)  # Span 2 columns
 
-        # Row 6: Vorticity colormap
-        layout.addWidget(QLabel("Vorticity colormap:"), 6, 0)
+        # Row 7: Vorticity colormap
+        layout.addWidget(QLabel("Vorticity colormap:"), 7, 0)
         self.vorticity_colormap_combo = QComboBox()
         self.vorticity_colormap_combo.setMaximumWidth(150)
         self._populate_vorticity_colormaps()
-        layout.addWidget(self.vorticity_colormap_combo, 6, 1, 1, 2)  # Span 2 columns
+        layout.addWidget(self.vorticity_colormap_combo, 7, 1, 1, 2)  # Span 2 columns
 
-        # Row 7: Pressure colormap
-        layout.addWidget(QLabel("Pressure colormap:"), 7, 0)
+        # Row 8: Pressure colormap
+        layout.addWidget(QLabel("Pressure colormap:"), 8, 0)
         self.pressure_colormap_combo = QComboBox()
         self.pressure_colormap_combo.setMaximumWidth(150)
         self._populate_pressure_colormaps()
-        layout.addWidget(self.pressure_colormap_combo, 7, 1, 1, 2)  # Span 2 columns
+        layout.addWidget(self.pressure_colormap_combo, 8, 1, 1, 2)  # Span 2 columns
 
-        # Row 8: Export buttons
+        # Row 9: Export buttons
         self.export_btn = QPushButton("Export Frame")
         self.export_btn.setMaximumWidth(100)
-        layout.addWidget(self.export_btn, 8, 0)
+        layout.addWidget(self.export_btn, 9, 0)
         self.record_btn = QPushButton("Record")
         self.record_btn.setMaximumWidth(80)
-        layout.addWidget(self.record_btn, 8, 1)
+        layout.addWidget(self.record_btn, 9, 1)
         self.save_btn = QPushButton("Save State")
         self.save_btn.setEnabled(False)
         self.save_btn.setMaximumWidth(90)
-        layout.addWidget(self.save_btn, 8, 2)
+        layout.addWidget(self.save_btn, 9, 2)
 
-        # Row 9: Auto-scale buttons
-        layout.addWidget(QLabel("Auto-scale:"), 9, 0)
+        # Row 10: Auto-scale buttons
+        layout.addWidget(QLabel("Auto-scale:"), 10, 0)
         self.autofit_velocity_btn = QPushButton("Velocity")
         self.autofit_velocity_btn.setMaximumWidth(70)
-        layout.addWidget(self.autofit_velocity_btn, 9, 1)
+        layout.addWidget(self.autofit_velocity_btn, 10, 1)
         self.autofit_vorticity_btn = QPushButton("Vorticity")
         self.autofit_vorticity_btn.setMaximumWidth(70)
-        layout.addWidget(self.autofit_vorticity_btn, 9, 2)
-        self.autofit_both_btn = QPushButton("Both")
-        self.autofit_both_btn.setMaximumWidth(50)
-        layout.addWidget(self.autofit_both_btn, 9, 3)
+        layout.addWidget(self.autofit_vorticity_btn, 10, 2)
+        self.autofit_pressure_btn = QPushButton("Pressure")
+        self.autofit_pressure_btn.setMaximumWidth(70)
+        layout.addWidget(self.autofit_pressure_btn, 10, 3)
+        self.autofit_dye_btn = QPushButton("Dye")
+        self.autofit_dye_btn.setMaximumWidth(50)
+        layout.addWidget(self.autofit_dye_btn, 10, 4)
+        self.autofit_all_btn = QPushButton("All")
+        self.autofit_all_btn.setMaximumWidth(50)
+        layout.addWidget(self.autofit_all_btn, 10, 5)
 
         self.setLayout(layout)
 

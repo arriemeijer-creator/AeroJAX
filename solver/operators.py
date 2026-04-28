@@ -15,9 +15,20 @@ def grad_x(f: jnp.ndarray, dx: float) -> jnp.ndarray:
 
 @jax.jit
 def grad_x_nonperiodic(f: jnp.ndarray, dx: float) -> jnp.ndarray:
-    """Non-periodic gradient in x-direction using edge padding"""
-    f_padded = jnp.pad(f, ((1, 1), (0, 0)), mode='edge')
-    return (f_padded[2:, :] - f_padded[:-2, :]) / (2.0 * dx)
+    """Non-periodic gradient in x-direction using forward/backward differences at boundaries"""
+    nx, ny = f.shape
+    grad = jnp.zeros_like(f)
+    
+    # Interior: central difference
+    grad = grad.at[1:-1, :].set((f[2:, :] - f[:-2, :]) / (2.0 * dx))
+    
+    # Left boundary (inlet): forward difference
+    grad = grad.at[0, :].set((f[1, :] - f[0, :]) / dx)
+    
+    # Right boundary (outlet): backward difference
+    grad = grad.at[-1, :].set((f[-1, :] - f[-2, :]) / dx)
+    
+    return grad
 
 
 @jax.jit
@@ -28,9 +39,20 @@ def grad_y(f: jnp.ndarray, dy: float) -> jnp.ndarray:
 
 @jax.jit
 def grad_y_nonperiodic(f: jnp.ndarray, dy: float) -> jnp.ndarray:
-    """Non-periodic gradient in y-direction using edge padding"""
-    f_padded = jnp.pad(f, ((0, 0), (1, 1)), mode='edge')
-    return (f_padded[:, 2:] - f_padded[:, :-2]) / (2.0 * dy)
+    """Non-periodic gradient in y-direction using forward/backward differences at boundaries"""
+    nx, ny = f.shape
+    grad = jnp.zeros_like(f)
+    
+    # Interior: central difference
+    grad = grad.at[:, 1:-1].set((f[:, 2:] - f[:, :-2]) / (2.0 * dy))
+    
+    # Bottom boundary: forward difference
+    grad = grad.at[:, 0].set((f[:, 1] - f[:, 0]) / dy)
+    
+    # Top boundary: backward difference
+    grad = grad.at[:, -1].set((f[:, -1] - f[:, -2]) / dy)
+    
+    return grad
 
 
 @jax.jit
@@ -57,8 +79,20 @@ def divergence(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float) -> jnp.ndar
 
 @jax.jit
 def divergence_nonperiodic(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float) -> jnp.ndarray:
-    """Compute divergence (non-periodic in both x and y directions)"""
-    return grad_x_nonperiodic(u, dx) + grad_y_nonperiodic(v, dy)
+    """Compute divergence (non-periodic in both x and y directions)
+    
+    For von Karman flow, we exclude boundary cells from divergence calculation
+    to avoid artificial divergence from BC enforcement.
+    """
+    div = jnp.zeros_like(u)
+    
+    # Interior cells only (exclude boundaries)
+    div = div.at[1:-1, 1:-1].set(
+        (u[2:, 1:-1] - u[:-2, 1:-1]) / (2.0 * dx) +
+        (v[1:-1, 2:] - v[1:-1, :-2]) / (2.0 * dy)
+    )
+    
+    return div
 
 
 @jax.jit

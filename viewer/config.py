@@ -19,6 +19,8 @@ class VisualizationConfig:
     # Display settings
     show_velocity: bool = True
     show_vorticity: bool = True
+    show_pressure: bool = True
+    show_dye: bool = True
     default_velocity_colormap: str = 'viridis'
     default_vorticity_colormap: str = 'coolwarm'
     
@@ -34,14 +36,14 @@ class SimulationConfig:
     # Default parameters
     default_reynolds: float = 2000.0  # Good for vortex shedding
     default_nu: float = 0.003  # Kinematic viscosity
-    default_dt: float = 0.01
+    default_dt: float = 0.005  # Restore to original value
     default_u_inf: float = None  # Will be calculated from Re, nu, L
     
     # Grid settings
     default_nx: int = 512   # Medium resolution for good performance
-    default_ny: int = 128  # Updated to match 20:5 aspect ratio for uniform grid spacing
+    default_ny: int = 192  # Increased from 128 to allow proper circulation contour margins
     default_lx: float = 20.0
-    default_ly: float = 5.0  # Calculated for uniform grid spacing (dx=dy) with 512x128
+    default_ly: float = 7.5  # Calculated for uniform grid spacing (dx=dy) with 512x192
     
     # Pressure solver settings
     pressure_max_iter: int = 50
@@ -129,7 +131,7 @@ class SolverPresets:
     ]
     
     PRESSURE_SOLVERS = [
-        "fft", "cg", "multigrid"
+        "fft", "cg", "multigrid", "jacobi"
     ]
     
     FLOW_TYPES = [

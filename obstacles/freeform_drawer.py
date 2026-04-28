@@ -327,7 +327,9 @@ class FreeformDrawer:
                 
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_s:  # Save
-                        self.saved_mask = self.canvas.copy()
+                        # Flip canvas vertically to match solver's coordinate system
+                        # Pygame has y=0 at top, solver has y=0 at bottom
+                        self.saved_mask = np.flipud(self.canvas).copy()
                         pygame.quit()
                         return self.saved_mask
                     elif event.key == pygame.K_c:  # Clear
@@ -342,6 +344,8 @@ class FreeformDrawer:
             
             # Display the canvas
             # Convert canvas to RGB for display (grayscale)
+            # Pygame expects (width, height, 3) but canvas is (height, width)
+            # Use transpose to swap axes
             display_surface = pygame.surfarray.make_surface(np.stack([self.canvas]*3, axis=-1).transpose(1, 0, 2))
             self.screen.blit(display_surface, (0, 0))
             

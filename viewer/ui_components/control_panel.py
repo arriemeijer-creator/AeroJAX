@@ -13,6 +13,7 @@ from .obstacle_controls import ObstacleControls
 from .time_controls import TimeControls
 from .dye_controls import DyeControls
 from .visualization_controls import VisualizationControls
+from .neural_operator_training import NeuralOperatorTraining
 from .collapsible_groupbox import CollapsibleGroupBox
 
 
@@ -59,7 +60,7 @@ class ControlPanel(QWidget):
         grid_layout.addWidget(QLabel("×"))
         self.grid_y_spinbox = QSpinBox()
         self.grid_y_spinbox.setRange(32, 2048)
-        self.grid_y_spinbox.setValue(128)
+        self.grid_y_spinbox.setValue(192)  # Increased from 128 for proper circulation contour margins
         self.grid_y_spinbox.setSingleStep(32)
         self.grid_y_spinbox.setMaximumWidth(90)
         grid_layout.addWidget(self.grid_y_spinbox)
@@ -69,6 +70,40 @@ class ControlPanel(QWidget):
         grid_layout.addStretch()
         grid_group.setLayout(grid_layout)
         sidebar_layout.addWidget(grid_group)
+        
+        # ========== GRID TYPE GROUP ==========
+        grid_type_group = CollapsibleGroupBox("Grid Type", start_collapsed=True)
+        grid_type_layout = QHBoxLayout()
+        grid_type_layout.addWidget(QLabel("Type:"))
+        self.grid_type_combo = QComboBox()
+        self.grid_type_combo.addItem("Collocated", "collocated")
+        self.grid_type_combo.addItem("MAC (Staggered)", "mac")
+        self.grid_type_combo.setCurrentIndex(0)  # Default to collocated
+        self.grid_type_combo.setMaximumWidth(150)
+        grid_type_layout.addWidget(self.grid_type_combo)
+        self.apply_grid_type_btn = QPushButton("Apply")
+        self.apply_grid_type_btn.setMaximumWidth(60)
+        grid_type_layout.addWidget(self.apply_grid_type_btn)
+        grid_type_layout.addStretch()
+        grid_type_group.setLayout(grid_type_layout)
+        sidebar_layout.addWidget(grid_type_group)
+
+        # ========== SOLVER TYPE GROUP ==========
+        solver_type_group = CollapsibleGroupBox("Solver Type", start_collapsed=True)
+        solver_type_layout = QHBoxLayout()
+        solver_type_layout.addWidget(QLabel("Method:"))
+        self.solver_type_combo = QComboBox()
+        self.solver_type_combo.addItem("Navier-Stokes", "navier_stokes")
+        self.solver_type_combo.addItem("Lattice Boltzmann", "lattice_boltzmann")
+        self.solver_type_combo.setCurrentIndex(0)  # Default to Navier-Stokes
+        self.solver_type_combo.setMaximumWidth(180)
+        solver_type_layout.addWidget(self.solver_type_combo)
+        self.apply_solver_type_btn = QPushButton("Apply")
+        self.apply_solver_type_btn.setMaximumWidth(60)
+        solver_type_layout.addWidget(self.apply_solver_type_btn)
+        solver_type_layout.addStretch()
+        solver_type_group.setLayout(solver_type_layout)
+        sidebar_layout.addWidget(solver_type_group)
 
         # ========== REYNOLDS NUMBER GROUP ==========
         re_group = CollapsibleGroupBox("Reynolds Number", start_collapsed=True)
@@ -127,7 +162,7 @@ class ControlPanel(QWidget):
         flow_layout = QHBoxLayout()
         flow_layout.addWidget(QLabel("Flow:"))
         self.flow_combo = QComboBox()
-        self.flow_combo.addItems(["von_karman", "taylor_green"])
+        self.flow_combo.addItems(["von_karman", "lid_driven_cavity", "taylor_green"])
         self.flow_combo.setMaximumWidth(150)
         flow_layout.addWidget(self.flow_combo)
         flow_layout.addStretch()
@@ -159,10 +194,10 @@ class ControlPanel(QWidget):
         solver_layout.addWidget(QLabel("MG V-cycles:"), 0, 0)
         self.vcycles_slider = QSlider(Qt.Orientation.Horizontal)
         self.vcycles_slider.setRange(1, 10)
-        self.vcycles_slider.setValue(7)
+        self.vcycles_slider.setValue(5)  # Default V-cycles
         self.vcycles_slider.setMaximumWidth(100)
         solver_layout.addWidget(self.vcycles_slider, 0, 1)
-        self.vcycles_label = QLabel("7")
+        self.vcycles_label = QLabel("5")
         self.vcycles_label.setMinimumWidth(20)
         solver_layout.addWidget(self.vcycles_label, 0, 2)
         self.apply_vcycles_btn = QPushButton("Apply")
@@ -213,6 +248,16 @@ class ControlPanel(QWidget):
         self.apply_les_btn.setEnabled(False)
         solver_layout.addWidget(self.apply_les_btn, 3, 3)
 
+        # Row 4: Pressure solver
+        solver_layout.addWidget(QLabel("Pressure Solver:"), 4, 0)
+        self.pressure_solver_combo = QComboBox()
+        self.pressure_solver_combo.addItems(["multigrid", "cg", "fft", "jacobi"])
+        self.pressure_solver_combo.setMaximumWidth(150)
+        solver_layout.addWidget(self.pressure_solver_combo, 4, 1, 1, 2)
+        self.apply_pressure_solver_btn = QPushButton("Apply")
+        self.apply_pressure_solver_btn.setMaximumWidth(50)
+        solver_layout.addWidget(self.apply_pressure_solver_btn, 4, 3)
+
         solver_group.setLayout(solver_layout)
         sidebar_layout.addWidget(solver_group)
 
@@ -228,11 +273,11 @@ class ControlPanel(QWidget):
         epsilon_row = QHBoxLayout()
         epsilon_row.addWidget(QLabel("Mask ε:"))
         self.epsilon_slider = QSlider(Qt.Orientation.Horizontal)
-        self.epsilon_slider.setRange(1, 100)
-        self.epsilon_slider.setValue(1)
+        self.epsilon_slider.setRange(1, 10000)  # Range for eps_multiplier (divided by 1000 in handler)
+        self.epsilon_slider.setValue(100)  # Default 0.1 (matches default eps_multiplier in params.py)
         self.epsilon_slider.setMaximumWidth(100)
         epsilon_row.addWidget(self.epsilon_slider)
-        self.epsilon_label = QLabel("0.01")
+        self.epsilon_label = QLabel("0.10")
         self.epsilon_label.setMinimumWidth(35)
         epsilon_row.addWidget(self.epsilon_label)
         self.apply_epsilon_btn = QPushButton("Apply")
@@ -295,6 +340,14 @@ class ControlPanel(QWidget):
         # ========== TIME STEPPING CONTROLS ==========
         self.time_controls = TimeControls(self)
         sidebar_layout.addWidget(self.time_controls)
+
+        # ========== NEURAL OPERATOR TRAINING CONTROLS ==========
+        neural_group = CollapsibleGroupBox("Neural Operator Training", start_collapsed=True)
+        neural_layout = QVBoxLayout()
+        self.neural_operator_training = NeuralOperatorTraining(self)
+        neural_layout.addWidget(self.neural_operator_training)
+        neural_group.setLayout(neural_layout)
+        sidebar_layout.addWidget(neural_group)
 
         sidebar_layout.addStretch()
 
@@ -487,6 +540,18 @@ class ControlPanel(QWidget):
         return self.visualization_controls.show_vorticity_checkbox
 
     @property
+    def show_pressure_checkbox(self):
+        return self.visualization_controls.show_pressure_checkbox
+
+    @property
+    def show_dye_checkbox(self):
+        return self.visualization_controls.show_dye_checkbox
+
+    @property
+    def particle_mode_checkbox(self):
+        return self.visualization_controls.particle_mode_checkbox
+
+    @property
     def show_sdf_checkbox(self):
         return self.visualization_controls.show_sdf_checkbox
 
@@ -505,6 +570,10 @@ class ControlPanel(QWidget):
     @property
     def adaptive_colorscale_checkbox(self):
         return self.visualization_controls.adaptive_colorscale_checkbox
+
+    @property
+    def show_quivers_checkbox(self):
+        return self.visualization_controls.show_quivers_checkbox
 
     @property
     def upscale_slider(self):
@@ -547,8 +616,16 @@ class ControlPanel(QWidget):
         return self.visualization_controls.autofit_vorticity_btn
 
     @property
-    def autofit_both_btn(self):
-        return self.visualization_controls.autofit_both_btn
+    def autofit_pressure_btn(self):
+        return self.visualization_controls.autofit_pressure_btn
+
+    @property
+    def autofit_dye_btn(self):
+        return self.visualization_controls.autofit_dye_btn
+
+    @property
+    def autofit_all_btn(self):
+        return self.visualization_controls.autofit_all_btn
 
     # Dye controls
     @property

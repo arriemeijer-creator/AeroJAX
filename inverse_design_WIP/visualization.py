@@ -57,10 +57,11 @@ class InverseDesignVisualization(QWidget):
         self.vort_plot.addItem(self.vort_image)
         self.vort_plot.setAspectLocked(True)
         
-        # Create graphics layout
+        # Create graphics layout with grey background
         gl = pg.GraphicsLayoutWidget()
+        gl.setBackground('#f0f0f0')
         gl.addItem(self.vel_plot, row=0, col=0)
-        gl.addItem(self.vort_plot, row=0, col=1)
+        gl.addItem(self.vort_plot, row=1, col=0)
         
         layout.addWidget(gl)
         self.flow_tab.setLayout(layout)
@@ -79,8 +80,6 @@ class InverseDesignVisualization(QWidget):
         # Cl history
         self.cl_plot = pg.PlotItem(title="Cl History")
         self.cl_curve = self.cl_plot.plot(pen='b')
-        self.cl_target_line = pg.InfiniteLine(angle=0, pen=pg.mkPen('g', style=Qt.PenStyle.DashLine))
-        self.cl_plot.addItem(self.cl_target_line)
         self.cl_plot.setLabel('left', 'Cl')
         self.cl_plot.setLabel('bottom', 'Iteration')
         self.cl_plot.showGrid(x=True, y=True)
@@ -88,17 +87,25 @@ class InverseDesignVisualization(QWidget):
         # Cd history
         self.cd_plot = pg.PlotItem(title="Cd History")
         self.cd_curve = self.cd_plot.plot(pen='m')
-        self.cd_target_line = pg.InfiniteLine(angle=0, pen=pg.mkPen('g', style=Qt.PenStyle.DashLine))
-        self.cd_plot.addItem(self.cd_target_line)
         self.cd_plot.setLabel('left', 'Cd')
         self.cd_plot.setLabel('bottom', 'Iteration')
         self.cd_plot.showGrid(x=True, y=True)
         
-        # Create graphics layout
+        # Airfoil shape plot (for history tab)
+        self.history_shape_plot = pg.PlotItem(title="Airfoil Shape")
+        self.history_shape_curve = self.history_shape_plot.plot(pen='b')
+        self.history_shape_plot.setAspectLocked(True)
+        self.history_shape_plot.setLabel('left', 'Y/c')
+        self.history_shape_plot.setLabel('bottom', 'X/c')
+        self.history_shape_plot.showGrid(x=True, y=True)
+        
+        # Create graphics layout with grey background
         gl = pg.GraphicsLayoutWidget()
+        gl.setBackground('#f0f0f0')
         gl.addItem(self.loss_plot, row=0, col=0)
         gl.addItem(self.cl_plot, row=0, col=1)
         gl.addItem(self.cd_plot, row=1, col=0)
+        gl.addItem(self.history_shape_plot, row=1, col=1)
         
         layout.addWidget(gl)
         self.history_tab.setLayout(layout)
@@ -109,14 +116,15 @@ class InverseDesignVisualization(QWidget):
         
         # Airfoil shape plot
         self.shape_plot = pg.PlotItem(title="Airfoil Shape")
-        self.shape_curve = self.shape_plot.plot(pen='b', symbol='o')
+        self.shape_curve = self.shape_plot.plot(pen='b')
         self.shape_plot.setAspectLocked(True)
         self.shape_plot.setLabel('left', 'Y/c')
         self.shape_plot.setLabel('bottom', 'X/c')
         self.shape_plot.showGrid(x=True, y=True)
         
-        # Create graphics widget
+        # Create graphics widget with grey background
         gl = pg.GraphicsLayoutWidget()
+        gl.setBackground('#f0f0f0')
         gl.addItem(self.shape_plot)
         
         layout.addWidget(gl)
@@ -127,15 +135,47 @@ class InverseDesignVisualization(QWidget):
         # Compute velocity magnitude
         vel_mag = np.sqrt(u**2 + v**2)
         
-        # Update velocity image
-        self.vel_image.setImage(vel_mag.T)
+        # Update velocity image (no transpose for left-to-right flow)
+        self.vel_image.setImage(vel_mag)
         
-        # Update vorticity image
-        self.vort_image.setImage(vort.T)
+        # Update vorticity image (no transpose for left-to-right flow)
+        self.vort_image.setImage(vort)
         
-        # Set colormaps
-        self.vel_image.setLookupTable(pg.colormap.get('inferno').getLookupTable())
-        self.vort_image.setLookupTable(pg.colormap.get('RdBu').getLookupTable())
+        # Set colormaps (use built-in thermal for velocity, gray for vorticity to avoid file errors)
+        try:
+            self.vel_image.setLookupTable(pg.colormap.get('inferno').getLookupTable())
+        except:
+            # Fallback to built-in colormap
+            pos = np.array([0.0, 1.0])
+            color = np.array([[0, 0, 0, 255], [255, 255, 255, 255]], dtype=np.ubyte)
+            self.vel_image.setLookupTable(pg.colormap.ColorMap(pos, color).getLookupTable())
+        
+        try:
+            self.vort_image.setLookupTable(pg.colormap.get('RdBu').getLookupTable())
+        except:
+            # Fallback to built-in colormap
+            pos = np.array([0.0, 0.5, 1.0])
+            color = np.array([[0, 0, 255, 255], [255, 255, 255, 255], [255, 0, 0, 255]], dtype=np.ubyte)
+            self.vort_image.setLookupTable(pg.colormap.ColorMap(pos, color).getLookupTable())
+    
+    def update_flow_field_dummy(self, nx=512, ny=96, camber=0.02, aoa=0.0):
+        """Generate dummy flow field for visualization when using surrogate model"""
+        x = np.linspace(0, 20, nx)
+        y = np.linspace(0, 3, ny)
+        X, Y = np.meshgrid(x, y, indexing='ij')
+        
+        # Create dummy velocity field that varies with parameters
+        # Higher camber and AoA create more variation
+        base_u = 2.0
+        u = np.ones((nx, ny)) * base_u + camber * np.sin(X) * 0.5
+        
+        # Add AoA effect to vertical velocity
+        v = np.sin(X) * 0.1 + np.sin(np.radians(aoa)) * 0.2 * np.exp(-((X - 5)**2) / 10)
+        
+        # Dummy vorticity that varies with camber
+        vort = np.cos(X) * 0.5 + camber * np.sin(Y) * 0.3
+        
+        self.update_flow_field(u, v, vort)
     
     def update_history(self, history: Dict[str, list]):
         """Update optimization history plots"""
@@ -154,11 +194,8 @@ class InverseDesignVisualization(QWidget):
     
     def update_target_lines(self, target_cl: Optional[float] = None, 
                            target_cd: Optional[float] = None):
-        """Update target value lines"""
-        if target_cl is not None:
-            self.cl_target_line.setPos(target_cl)
-        if target_cd is not None:
-            self.cd_target_line.setPos(target_cd)
+        """Update target value lines (no longer used)"""
+        pass
     
     def update_airfoil_shape(self, x_upper: np.ndarray, y_upper: np.ndarray,
                             x_lower: np.ndarray, y_lower: np.ndarray):
@@ -167,7 +204,43 @@ class InverseDesignVisualization(QWidget):
         x = np.concatenate([x_upper, x_lower[::-1]])
         y = np.concatenate([y_upper, y_lower[::-1]])
         
+        # Update both the dedicated shape tab and the history tab
         self.shape_curve.setData(x, y)
+        self.history_shape_curve.setData(x, y)
+    
+    def update_airfoil_shape_dummy(self, camber=0.02, camber_pos=0.4, thickness=0.12, aoa=0.0):
+        """Generate dummy NACA airfoil shape for visualization when using surrogate model"""
+        # Simple NACA 4-digit airfoil generation
+        n_points = 100
+        x = np.linspace(0, 1, n_points)
+        
+        # Thickness distribution (NACA 00xx)
+        yt = 5 * thickness * (0.2969 * np.sqrt(x) - 0.1260 * x - 0.3516 * x**2 + 
+                             0.2843 * x**3 - 0.1015 * x**4)
+        
+        # Camber line
+        yc = np.zeros_like(x)
+        if camber > 0:
+            m = camber
+            p = camber_pos
+            yc = np.where(x < p,
+                        m / p**2 * (2 * p * x - x**2),
+                        m / (1 - p)**2 * ((1 - 2 * p) + 2 * p * x - x**2))
+        
+        # Upper and lower surfaces
+        x_upper = x
+        y_upper = yc + yt
+        x_lower = x
+        y_lower = yc - yt
+        
+        # Apply angle of attack rotation
+        angle = np.radians(aoa)
+        x_upper_rot = x_upper * np.cos(angle) - y_upper * np.sin(angle)
+        y_upper_rot = x_upper * np.sin(angle) + y_upper * np.cos(angle)
+        x_lower_rot = x_lower * np.cos(angle) - y_lower * np.sin(angle)
+        y_lower_rot = x_lower * np.sin(angle) + y_lower * np.cos(angle)
+        
+        self.update_airfoil_shape(x_upper_rot, y_upper_rot, x_lower_rot, y_lower_rot)
 
 
 class MetricsDisplay(QWidget):

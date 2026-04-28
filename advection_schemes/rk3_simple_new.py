@@ -2,11 +2,11 @@ import jax
 import jax.numpy as jnp
 from typing import Tuple
 
-@jax.jit(static_argnames=('nu_hyper_ratio', 'slip_walls'))
+@jax.jit(static_argnames=('nu_hyper_ratio', 'slip_walls', 'flow_type'))
 def rk3_step_simple_new(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
                         dx: float, dy: float, mask: jnp.ndarray, U_inf: float = 1.0,
                         nu_sgs: jnp.ndarray = None, nu_hyper_ratio: float = 0.0,
-                        slip_walls: bool = True) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                        slip_walls: bool = True, flow_type: str = 'von_karman') -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Improved RK3 scheme with proper handling of masks and biharmonic operator
     """
@@ -57,39 +57,53 @@ def rk3_step_simple_new(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
         return jnp.maximum(sponge_x[:, None], sponge_y[None, :])
 
     def apply_boundary_conditions(u_field, v_field):
-        u_field = u_field.at[0, :].set(U_inf)
-        v_field = v_field.at[0, :].set(0.0)
-        u_field = u_field.at[-1, :].set(u_field[-2, :])
-        v_field = v_field.at[-1, :].set(v_field[-2, :])
-        # Wall boundary conditions (slip vs no-slip)
-        if slip_walls:
-            # Slip walls: v=0, u extrapolated from interior
-            u_field = u_field.at[:, 0].set(u_field[:, 1])  # Bottom: slip
-            u_field = u_field.at[:, -1].set(u_field[:, -2])  # Top: slip
-            v_field = v_field.at[:, 0].set(0.0)  # Bottom: v=0
-            v_field = v_field.at[:, -1].set(0.0)  # Top: v=0
+        if flow_type == 'lid_driven_cavity':
+            # LDC: Lid at top moves with U_inf, all other walls are no-slip
+            u_field = u_field.at[:, -1].set(U_inf)  # Top lid
+            u_field = u_field.at[:, 0].set(0.0)  # Bottom wall
+            u_field = u_field.at[0, :].set(0.0)  # Left wall
+            u_field = u_field.at[-1, :].set(0.0)  # Right wall
+            v_field = v_field.at[:, 0].set(0.0)  # Bottom wall
+            v_field = v_field.at[:, -1].set(0.0)  # Top wall
+            v_field = v_field.at[0, :].set(0.0)  # Left wall
+            v_field = v_field.at[-1, :].set(0.0)  # Right wall
         else:
-            # No-slip walls: u=0, v=0
-            u_field = u_field.at[:, 0].set(0.0)
-            u_field = u_field.at[:, -1].set(0.0)
-            v_field = v_field.at[:, 0].set(0.0)
-            v_field = v_field.at[:, -1].set(0.0)
+            # von_karman: Inlet at left, outlet at right
+            u_field = u_field.at[0, :].set(U_inf)
+            v_field = v_field.at[0, :].set(0.0)
+            u_field = u_field.at[-1, :].set(u_field[-2, :])
+            v_field = v_field.at[-1, :].set(v_field[-2, :])
+            # Wall boundary conditions (slip vs no-slip)
+            if slip_walls:
+                # Slip walls: v=0, u extrapolated from interior
+                u_field = u_field.at[:, 0].set(u_field[:, 1])  # Bottom: slip
+                u_field = u_field.at[:, -1].set(u_field[:, -2])  # Top: slip
+                v_field = v_field.at[:, 0].set(0.0)  # Bottom: v=0
+                v_field = v_field.at[:, -1].set(0.0)  # Top: v=0
+            else:
+                # No-slip walls: u=0, v=0
+                u_field = u_field.at[:, 0].set(0.0)
+                u_field = u_field.at[:, -1].set(0.0)
+                v_field = v_field.at[:, 0].set(0.0)
+                v_field = v_field.at[:, -1].set(0.0)
         return u_field, v_field
 
     # Precompute sponge layer once (avoids recomputation in each RK stage)
-    sponge_field = create_sponge_layer(nx, ny, sponge_width_ratio=0.0)  # Disabled - causing high divergence at boundary
+    sponge_field = create_sponge_layer(nx, ny, sponge_width_ratio=0.0)  # Disabled
     
     def compute_rhs(u_in, v_in):
         # Use upwind scheme to eliminate Gibbs oscillations
         def upwind_advection(field, vel_u, vel_v):
-            # X-direction upwind
+            # X-direction upwind with non-periodic boundaries
+            f_padded = jnp.pad(field, ((1, 1), (0, 0)), mode='edge')
             f_x = jnp.where(vel_u > 0,
-                            vel_u * (field - jnp.roll(field, 1, axis=0)) / dx,
-                            vel_u * (jnp.roll(field, -1, axis=0) - field) / dx)
-            # Y-direction upwind
+                            vel_u * (field - f_padded[:-2, :]) / dx,
+                            vel_u * (f_padded[2:, :] - field) / dx)
+            # Y-direction upwind with non-periodic boundaries
+            f_padded_y = jnp.pad(field, ((0, 0), (1, 1)), mode='edge')
             f_y = jnp.where(vel_v > 0,
-                            vel_v * (field - jnp.roll(field, 1, axis=1)) / dy,
-                            vel_v * (jnp.roll(field, -1, axis=1) - field) / dy)
+                            vel_v * (field - f_padded_y[:, :-2]) / dy,
+                            vel_v * (f_padded_y[:, 2:] - field) / dy)
             return f_x + f_y
 
         # Apply mask to velocity for advection
@@ -151,11 +165,12 @@ def rk3_step_simple_new(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
     return u_new, v_new
 
 
-@jax.jit(static_argnames=('nu_hyper_ratio', 'slip_walls', 'fast_mode'))
+@jax.jit(static_argnames=('nu_hyper_ratio', 'slip_walls', 'fast_mode', 'flow_type'))
 def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
-                    dx: float, dy: float, mask: jnp.ndarray, U_inf: float = 1.0,
+                    dx: float, dy: float, mask: jnp.ndarray, sdf: jnp.ndarray = None, U_inf: float = 1.0,
                     nu_sgs: jnp.ndarray = None, nu_hyper_ratio: float = 0.0,
-                    slip_walls: bool = True, fast_mode: bool = False, brinkman_eta: float = 0.01) -> Tuple[jnp.ndarray, jnp.ndarray]:
+                    slip_walls: bool = True, fast_mode: bool = False, brinkman_eta: float = 0.01,
+                    flow_type: str = 'von_karman') -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Unified step function that switches between RK3 (Scientific) and RK2 (Fast) using jax.lax.cond.
     Uses implicit Brinkman penalization to avoid upstream artifacts.
@@ -163,10 +178,19 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
     Args:
         fast_mode: If True, uses RK2 (Heun's method) for speed. If False, uses RK3 for accuracy.
         brinkman_eta: Brinkman damping parameter for implicit penalization
+        sdf: Signed distance function for Brinkman penalization (if provided, uses SDF-based penalization)
+        flow_type: Flow type for boundary conditions ('von_karman' or 'lid_driven_cavity')
     """
 
     nx, ny = u.shape
-    chi = 1.0 - mask   # 1 inside solid, 0 outside
+    # Use SDF-based penalization if SDF is provided, otherwise fall back to mask-based
+    if sdf is not None:
+        # Single sigmoid from SDF - eliminates double sigmoid issue
+        # Note: SDF is negative inside solid, positive outside
+        # We want chi=1 inside solid, 0 outside, so use -sdf
+        chi = jax.nn.sigmoid(-sdf / (0.1 * dx))  # Use same epsilon as mask creation
+    else:
+        chi = 1.0 - mask   # 1 inside solid, 0 outside (fallback)
     eta = brinkman_eta
     
     def grad_x(f):
@@ -213,36 +237,50 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
         return jnp.maximum(sponge_x[:, None], sponge_y[None, :])
 
     def apply_boundary_conditions(u_field, v_field):
-        u_field = u_field.at[0, :].set(U_inf)
-        v_field = v_field.at[0, :].set(0.0)
-        u_field = u_field.at[-1, :].set(u_field[-2, :])
-        v_field = v_field.at[-1, :].set(v_field[-2, :])
-        if slip_walls:
-            u_field = u_field.at[:, 0].set(u_field[:, 1])
-            u_field = u_field.at[:, -1].set(u_field[:, -2])
-            v_field = v_field.at[:, 0].set(0.0)
-            v_field = v_field.at[:, -1].set(0.0)
+        if flow_type == 'lid_driven_cavity':
+            # LDC: Lid at top moves with U_inf, all other walls are no-slip
+            u_field = u_field.at[:, -1].set(U_inf)  # Top lid
+            u_field = u_field.at[:, 0].set(0.0)  # Bottom wall
+            u_field = u_field.at[0, :].set(0.0)  # Left wall
+            u_field = u_field.at[-1, :].set(0.0)  # Right wall
+            v_field = v_field.at[:, 0].set(0.0)  # Bottom wall
+            v_field = v_field.at[:, -1].set(0.0)  # Top wall
+            v_field = v_field.at[0, :].set(0.0)  # Left wall
+            v_field = v_field.at[-1, :].set(0.0)  # Right wall
         else:
-            u_field = u_field.at[:, 0].set(0.0)
-            u_field = u_field.at[:, -1].set(0.0)
-            v_field = v_field.at[:, 0].set(0.0)
-            v_field = v_field.at[:, -1].set(0.0)
+            # von_karman: Inlet at left, outlet at right
+            u_field = u_field.at[0, :].set(U_inf)
+            v_field = v_field.at[0, :].set(0.0)
+            u_field = u_field.at[-1, :].set(u_field[-2, :])
+            v_field = v_field.at[-1, :].set(v_field[-2, :])
+            if slip_walls:
+                u_field = u_field.at[:, 0].set(u_field[:, 1])
+                u_field = u_field.at[:, -1].set(u_field[:, -2])
+                v_field = v_field.at[:, 0].set(0.0)
+                v_field = v_field.at[:, -1].set(0.0)
+            else:
+                u_field = u_field.at[:, 0].set(0.0)
+                u_field = u_field.at[:, -1].set(0.0)
+                v_field = v_field.at[:, 0].set(0.0)
+                v_field = v_field.at[:, -1].set(0.0)
         return u_field, v_field
 
-    sponge_field = create_sponge_layer(nx, ny, sponge_width_ratio=0.0)  # Disabled - causing high divergence at boundary
+    sponge_field = create_sponge_layer(nx, ny, sponge_width_ratio=0.0)  # Disabled
 
     def compute_rhs_explicit(u_in, v_in):
         # Advection and diffusion only (no penalization in explicit part)
         # Use upwind scheme to eliminate Gibbs oscillations
         def upwind_advection(field, vel_u, vel_v):
-            # X-direction upwind
+            # X-direction upwind with non-periodic boundaries
+            f_padded = jnp.pad(field, ((1, 1), (0, 0)), mode='edge')
             f_x = jnp.where(vel_u > 0,
-                            vel_u * (field - jnp.roll(field, 1, axis=0)) / dx,
-                            vel_u * (jnp.roll(field, -1, axis=0) - field) / dx)
-            # Y-direction upwind
+                            vel_u * (field - f_padded[:-2, :]) / dx,
+                            vel_u * (f_padded[2:, :] - field) / dx)
+            # Y-direction upwind with non-periodic boundaries
+            f_padded_y = jnp.pad(field, ((0, 0), (1, 1)), mode='edge')
             f_y = jnp.where(vel_v > 0,
-                            vel_v * (field - jnp.roll(field, 1, axis=1)) / dy,
-                            vel_v * (jnp.roll(field, -1, axis=1) - field) / dy)
+                            vel_v * (field - f_padded_y[:, :-2]) / dy,
+                            vel_v * (f_padded_y[:, 2:] - field) / dy)
             return f_x + f_y
 
         advection_u = upwind_advection(u_in, u_in, v_in)
@@ -277,6 +315,10 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
         v_star = v + dt * k3v
         u_new = ((1/3) * u + (2/3) * u_star) / (1 + dt * chi / eta)
         v_new = ((1/3) * v + (2/3) * v_star) / (1 + dt * chi / eta)
+        # Hard mask zeroing: force velocities to zero inside solid (mask < 0.5)
+        # This is needed because mask has smooth sigmoid transition, so multiplication doesn't fully zero
+        u_new = jnp.where(mask > 0.5, u_new, 0.0)
+        v_new = jnp.where(mask > 0.5, v_new, 0.0)
         u_new, v_new = apply_boundary_conditions(u_new, v_new)
         return u_new, v_new
 
@@ -289,6 +331,10 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
         k2u, k2v = compute_rhs_explicit(u_star, v_star)
         u_new = (u + 0.5 * dt * (k1u + k2u)) / (1 + dt * chi / eta)
         v_new = (v + 0.5 * dt * (k1v + k2v)) / (1 + dt * chi / eta)
+        # Hard mask zeroing: force velocities to zero inside solid (mask < 0.5)
+        # This is needed because mask has smooth sigmoid transition, so multiplication doesn't fully zero
+        u_new = jnp.where(mask > 0.5, u_new, 0.0)
+        v_new = jnp.where(mask > 0.5, v_new, 0.0)
         u_new, v_new = apply_boundary_conditions(u_new, v_new)
         return u_new, v_new
 

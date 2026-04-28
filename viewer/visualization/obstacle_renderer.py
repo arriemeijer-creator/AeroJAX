@@ -9,9 +9,10 @@ from PyQt6 import sip
 
 class ObstacleRenderer:
     """Handles rendering of obstacles (cylinder, NACA airfoils)"""
-    
-    def __init__(self, vel_outline, vort_outline, scalar_outline, pressure_outline):
+
+    def __init__(self, vel_outline, div_outline, vort_outline, scalar_outline, pressure_outline):
         self.vel_outline = vel_outline
+        self.div_outline = div_outline  # May be None
         self.vort_outline = vort_outline
         self.scalar_outline = scalar_outline
         self.pressure_outline = pressure_outline
@@ -51,12 +52,16 @@ class ObstacleRenderer:
                 from PyQt6.QtGui import QPolygonF
                 from PyQt6.QtCore import QPointF
                 empty_polygon = QPolygonF()
-                if (self.vel_outline is not None and 
-                    hasattr(self.vel_outline, 'setPolygon') and 
+                if (self.vel_outline is not None and
+                    hasattr(self.vel_outline, 'setPolygon') and
                     not sip.isdeleted(self.vel_outline)):
                     self.vel_outline.setPolygon(empty_polygon)
-                if (self.vort_outline is not None and 
-                    hasattr(self.vort_outline, 'setPolygon') and 
+                if (self.div_outline is not None and
+                    hasattr(self.div_outline, 'setPolygon') and
+                    not sip.isdeleted(self.div_outline)):
+                    self.div_outline.setPolygon(empty_polygon)
+                if (self.vort_outline is not None and
+                    hasattr(self.vort_outline, 'setPolygon') and
                     not sip.isdeleted(self.vort_outline)):
                     self.vort_outline.setPolygon(empty_polygon)
                 if (self.scalar_outline is not None and
@@ -119,13 +124,18 @@ class ObstacleRenderer:
                 self.vel_outline.setPolygon(polygon)
                 self.vel_outline.setVisible(True)
             
-            if (self.vort_outline is not None and 
-                hasattr(self.vort_outline, 'setPolygon') and 
+            if (self.div_outline is not None and
+                hasattr(self.div_outline, 'setPolygon') and
+                not sip.isdeleted(self.div_outline)):
+                self.div_outline.setPolygon(polygon)
+
+            if (self.vort_outline is not None and
+                hasattr(self.vort_outline, 'setPolygon') and
                 not sip.isdeleted(self.vort_outline)):
                 self.vort_outline.setPolygon(polygon)
-            
-            if (self.scalar_outline is not None and 
-                hasattr(self.scalar_outline, 'setPolygon') and 
+
+            if (self.scalar_outline is not None and
+                hasattr(self.scalar_outline, 'setPolygon') and
                 not sip.isdeleted(self.scalar_outline)):
                 self.scalar_outline.setPolygon(polygon)
 
@@ -174,13 +184,18 @@ class ObstacleRenderer:
                 self.vel_outline.setPolygon(polygon)
                 self.vel_outline.setVisible(True)
             
-            if (self.vort_outline is not None and 
-                hasattr(self.vort_outline, 'setPolygon') and 
+            if (self.div_outline is not None and
+                hasattr(self.div_outline, 'setPolygon') and
+                not sip.isdeleted(self.div_outline)):
+                self.div_outline.setPolygon(polygon)
+
+            if (self.vort_outline is not None and
+                hasattr(self.vort_outline, 'setPolygon') and
                 not sip.isdeleted(self.vort_outline)):
                 self.vort_outline.setPolygon(polygon)
-            
-            if (self.scalar_outline is not None and 
-                hasattr(self.scalar_outline, 'setPolygon') and 
+
+            if (self.scalar_outline is not None and
+                hasattr(self.scalar_outline, 'setPolygon') and
                 not sip.isdeleted(self.scalar_outline)):
                 self.scalar_outline.setPolygon(polygon)
 
@@ -253,13 +268,18 @@ class ObstacleRenderer:
                 not sip.isdeleted(self.vel_outline)):
                 self.vel_outline.setPolygon(polygon)
             
-            if (self.vort_outline is not None and 
-                hasattr(self.vort_outline, 'setPolygon') and 
+            if (self.div_outline is not None and
+                hasattr(self.div_outline, 'setPolygon') and
+                not sip.isdeleted(self.div_outline)):
+                self.div_outline.setPolygon(polygon)
+
+            if (self.vort_outline is not None and
+                hasattr(self.vort_outline, 'setPolygon') and
                 not sip.isdeleted(self.vort_outline)):
                 self.vort_outline.setPolygon(polygon)
-            
-            if (self.scalar_outline is not None and 
-                hasattr(self.scalar_outline, 'setPolygon') and 
+
+            if (self.scalar_outline is not None and
+                hasattr(self.scalar_outline, 'setPolygon') and
                 not sip.isdeleted(self.scalar_outline)):
                 self.scalar_outline.setPolygon(polygon)
 
@@ -407,16 +427,21 @@ class ObstacleRenderer:
                 polygon_points = [QPointF(x, y) for x, y in zip(x_outline, y_outline)]
                 polygon = QPolygonF(polygon_points)
                 
-                if (self.vel_outline is not None and 
-                    hasattr(self.vel_outline, 'setPolygon') and 
+                if (self.vel_outline is not None and
+                    hasattr(self.vel_outline, 'setPolygon') and
                     not sip.isdeleted(self.vel_outline)):
                     self.vel_outline.setPolygon(polygon)
-                    
-                if (self.vort_outline is not None and 
-                    hasattr(self.vort_outline, 'setPolygon') and 
+
+                if (self.div_outline is not None and
+                    hasattr(self.div_outline, 'setPolygon') and
+                    not sip.isdeleted(self.div_outline)):
+                    self.div_outline.setPolygon(polygon)
+
+                if (self.vort_outline is not None and
+                    hasattr(self.vort_outline, 'setPolygon') and
                     not sip.isdeleted(self.vort_outline)):
                     self.vort_outline.setPolygon(polygon)
-                    
+
                 if (self.scalar_outline is not None and
                     hasattr(self.scalar_outline, 'setPolygon') and
                     not sip.isdeleted(self.scalar_outline)):
@@ -513,17 +538,22 @@ class ObstacleRenderer:
                 polygon = QPolygonF(all_points)
                 
                 # Draw using existing outline items
-                if (self.vel_outline is not None and 
-                    hasattr(self.vel_outline, 'setPolygon') and 
+                if (self.vel_outline is not None and
+                    hasattr(self.vel_outline, 'setPolygon') and
                     not sip.isdeleted(self.vel_outline)):
                     self.vel_outline.setPolygon(polygon)
                     self.vel_outline.setVisible(True)
-                
-                if (self.vort_outline is not None and 
-                    hasattr(self.vort_outline, 'setPolygon') and 
+
+                if (self.div_outline is not None and
+                    hasattr(self.div_outline, 'setPolygon') and
+                    not sip.isdeleted(self.div_outline)):
+                    self.div_outline.setPolygon(polygon)
+
+                if (self.vort_outline is not None and
+                    hasattr(self.vort_outline, 'setPolygon') and
                     not sip.isdeleted(self.vort_outline)):
                     self.vort_outline.setPolygon(polygon)
-                
+
                 if (self.scalar_outline is not None and
                     hasattr(self.scalar_outline, 'setPolygon') and
                     not sip.isdeleted(self.scalar_outline)):
@@ -541,6 +571,10 @@ class ObstacleRenderer:
                     hasattr(self.vel_outline, 'setPolygon') and
                     not sip.isdeleted(self.vel_outline)):
                     self.vel_outline.setPolygon(empty_polygon)
+                if (self.div_outline is not None and
+                    hasattr(self.div_outline, 'setPolygon') and
+                    not sip.isdeleted(self.div_outline)):
+                    self.div_outline.setPolygon(empty_polygon)
                 if (self.vort_outline is not None and
                     hasattr(self.vort_outline, 'setPolygon') and
                     not sip.isdeleted(self.vort_outline)):

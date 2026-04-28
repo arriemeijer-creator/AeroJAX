@@ -10,6 +10,8 @@ from .visualization_controls import VisualizationControls
 from .info_panel import InfoPanel
 from .control_panel import ControlPanel
 from .floating_control_bar import FloatingControlBar
+from .neural_operator_training import NeuralOperatorTraining
+from .right_control_panel import RightControlPanel
 
 __all__ = [
     'TopConsole',
@@ -20,4 +22,6 @@ __all__ = [
     'InfoPanel',
     'ControlPanel',
     'FloatingControlBar',
+    'NeuralOperatorTraining',
+    'RightControlPanel',
 ]

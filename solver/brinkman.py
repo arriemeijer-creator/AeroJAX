@@ -8,14 +8,15 @@ from typing import Tuple
 
 
 @jax.jit
-def apply_brinkman_penalization(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
-                                dt: float, nu: float, dx: float, eta_max: float = 50.0) -> Tuple[jnp.ndarray, jnp.ndarray]:
+def apply_brinkman_penalization(u: jnp.ndarray, v: jnp.ndarray, sdf: jnp.ndarray,
+                                dt: float, nu: float, dx: float, eps: float = 0.05, eta_max: float = 50.0) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Brinkman penalization for immersed boundaries with improved accuracy.
+    Brinkman penalization for immersed boundaries using SDF directly.
+    Eliminates double sigmoid by working with SDF instead of pre-smoothed mask.
     """
-    # Sigmoid trick: sharper boundary transition with defined gradient everywhere
-    beta = 20.0  # Sharpness parameter; higher = sharper wall
-    chi = jax.nn.sigmoid(beta * (0.5 - mask))
+    # Single sigmoid: convert SDF directly to solid fraction chi
+    # This is the only sigmoid - no double application
+    chi = jax.nn.sigmoid(sdf / eps)
 
     # Increased penalization strength
     eta = eta_max * chi
@@ -31,8 +32,9 @@ def apply_brinkman_penalization(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarra
                             1.5 * v, v_penalized)
 
     # Hard-zero the interior: force velocity to zero inside airfoil
-    u_final = u_penalized * jnp.where(mask > 0.01, 1.0, 0.0)
-    v_final = v_penalized * jnp.where(mask > 0.01, 1.0, 0.0)
+    # Use SDF directly: negative SDF means inside solid
+    u_final = u_penalized * jnp.where(sdf > 0, 1.0, 0.0)
+    v_final = v_penalized * jnp.where(sdf > 0, 1.0, 0.0)
 
     return u_final, v_final
 

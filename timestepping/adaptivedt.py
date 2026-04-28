@@ -1,7 +1,7 @@
 """
 Divergence-based PID Controller for Adaptive Timestepping
 """
-import jax.numpy as jnp
+import math
 
 
 class DivergencePIDController:
@@ -15,11 +15,18 @@ class DivergencePIDController:
         self.integral_limit = integral_limit
         self.integral = 0.0
         self.prev_error = 0.0
-    
+
+    def reset_state(self):
+        """Reset internal state (integral and prev_error) to clear NaN or accumulated errors"""
+        self.integral = 0.0
+        self.prev_error = 0.0
+
     def update(self, current_dt, div_max, eta_max=None, dt_max=None):
         # Safeguard against invalid divergence values
-        if not jnp.isfinite(div_max) or div_max < 0:
+        if not math.isfinite(div_max) or div_max < 0:
             # If divergence is invalid or negative, reduce timestep conservatively
+            # Also reset internal state to prevent NaN persistence
+            self.reset_state()
             new_dt = current_dt * 0.5
             if dt_max is None:
                 dt_max = self.dt_max

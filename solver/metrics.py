@@ -11,47 +11,15 @@ from .operators import grad_x, grad_y, vorticity, grad_x_nonperiodic, grad_y_non
 
 
 @jax.jit
-def compute_forces(u: jnp.ndarray, v: jnp.ndarray, p: jnp.ndarray, mask: jnp.ndarray,
-                   dx: float, dy: float, nu: float, chord_length: float = 3.0) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Compute drag and lift forces on immersed boundaries by integrating over actual surface"""
-    dp_dx = grad_x_nonperiodic(p, dx)
-    dp_dy = grad_y_nonperiodic(p, dy)
-    du_dx = grad_x_nonperiodic(u, dx)
-    du_dy = grad_y_nonperiodic(u, dy)
-    dv_dx = grad_x_nonperiodic(v, dx)
-    dv_dy = grad_y_nonperiodic(v, dy)
-    sigma_xx = p + 2.0 * nu * du_dx  # Fixed sign: +p instead of -p (pressure correction already accounts for sign)
-    sigma_yy = p + 2.0 * nu * dv_dy  # Fixed sign: +p instead of -p
-    sigma_xy = nu * (du_dy + dv_dx)
-    dm_dx = grad_x_nonperiodic(mask, dx)
-    dm_dy = grad_y_nonperiodic(mask, dy)
-
-    # Normalize the gradient to get proper normal vector
-    mag_grad = jnp.sqrt(dm_dx**2 + dm_dy**2)
-    # Only calculate normals where mask gradient is significant to avoid noise amplification
-    safe_mag = jnp.where(mag_grad > 1e-5, mag_grad, 1.0)
-    nx = jnp.where(mag_grad > 1e-5, dm_dx / safe_mag, 0.0)
-    ny = jnp.where(mag_grad > 1e-5, dm_dy / safe_mag, 0.0)
-
-    # Identify actual surface cells (where mask gradient is large)
-    # Use threshold to separate actual surface from diffuse layer
-    surface_threshold = 0.5 * jnp.max(mag_grad)
-    is_surface = mag_grad > surface_threshold
-
-    # Force exerted by fluid on body = - (Force exerted by body on fluid)
-    # Compute forces ONLY on actual surface cells, not diffuse layer
-    fx_contrib = -(sigma_xx * nx + sigma_xy * ny) * is_surface
-    fy_contrib = -(sigma_xy * nx + sigma_yy * ny) * is_surface
-
-    drag = jnp.sum(fx_contrib) * dx * dy
-    lift = jnp.sum(fy_contrib) * dx * dy
-
-    # Return additional diagnostics for debugging
-    max_grad = jnp.max(mag_grad)
-    num_surface_cells = jnp.sum(is_surface)
-    surface_length_estimate = num_surface_cells * dx
-
-    return drag, lift, max_grad, surface_length_estimate
+def interpolate_to_cell_center(u: jnp.ndarray, v: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Interpolate staggered velocities to cell centers.
+    u: (nx+1, ny) at x-faces -> u_center: (nx, ny)
+    v: (nx, ny+1) at y-faces -> v_center: (nx, ny)
+    """
+    u_center = 0.5 * (u[1:, :] + u[:-1, :])
+    v_center = 0.5 * (v[:, 1:] + v[:, :-1])
+    return u_center, v_center
 
 
 def get_airfoil_surface_mask(mask: jnp.ndarray, dx: float, threshold: float = 0.1) -> jnp.ndarray:
@@ -74,10 +42,14 @@ def find_stagnation_point(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray, p: 
 
 
 def find_separation_point(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
-                          grid_X: jnp.ndarray, dx: float, dy: float, threshold: float = 0.1) -> float:
+                          grid_X: jnp.ndarray, dx: float, dy: float, threshold: float = 0.1, grid_type: str = 'collocated') -> float:
     """Find separation by wall shear stress sign change on surface, returned in absolute domain coordinates"""
     surface = get_airfoil_surface_mask(mask, dx, threshold)
-    vort = vorticity(u, v, dx, dy)
+    if grid_type == 'mac':
+        from solver.operators_mac import vorticity_nonperiodic_staggered
+        vort = vorticity_nonperiodic_staggered(u, v, dx, dy)
+    else:
+        vort = vorticity(u, v, dx, dy)
     # Only consider surface cells
     surface_vort = jnp.where(surface, vort, 0.0)
 
@@ -303,3 +275,252 @@ def compute_CL_circulation(vorticity: jnp.ndarray, mask: jnp.ndarray, dx: float,
     CL = 2.0 * gamma / (U_inf * chord)
 
     return CL
+
+
+def compute_circulation_contour(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float,
+                                x_min: float, x_max: float, y_min: float, y_max: float) -> jnp.ndarray:
+    """
+    Compute circulation around a rectangular contour using line integral.
+
+    Args:
+        u: x-velocity field (cell-centered or interpolated to cell centers)
+        v: y-velocity field (cell-centered or interpolated to cell centers)
+        dx, dy: Grid spacing
+        x_min, x_max: Contour bounds in x-direction
+        y_min, y_max: Contour bounds in y-direction
+
+    Returns:
+        gamma: Circulation ∮ u·dl
+    """
+    # Find indices (not JIT-compiled)
+    i_min = int(x_min / dx)
+    i_max = int(x_max / dx)
+    j_min = int(y_min / dy)
+    j_max = int(y_max / dy)
+
+    # Clamp indices to grid bounds
+    nx, ny = u.shape
+    i_min = max(0, min(i_min, nx - 1))
+    i_max = max(0, min(i_max, nx - 1))
+    j_min = max(0, min(j_min, ny - 1))
+    j_max = max(0, min(j_max, ny - 1))
+
+    # Ensure i_max > i_min and j_max > j_min
+    if i_max <= i_min:
+        i_max = i_min + 1
+    if j_max <= j_min:
+        j_max = j_min + 1
+
+    # Circulation: ∮ u·dl = ∫(u dx + v dy) along contour
+    # Bottom edge: (i_min→i_max, j_min) - v component
+    gamma = jnp.sum(v[i_min:i_max, j_min]) * dx
+
+    # Right edge: (i_max, j_min→j_max) - u component
+    gamma += jnp.sum(u[i_max, j_min:j_max]) * dy
+
+    # Top edge: (i_max→i_min, j_max) - v component (negative direction)
+    gamma -= jnp.sum(v[i_min:i_max, j_max]) * dx
+
+    # Left edge: (i_min, j_max→j_min) - u component (negative direction)
+    gamma -= jnp.sum(u[i_min, j_min:j_max]) * dy
+
+    return gamma
+
+
+def compute_lift_circulation_contour(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
+                                     dx: float, dy: float,
+                                     U_inf: float, chord: float,
+                                     airfoil_x: float, airfoil_y: float,
+                                     contour_margin: float = 1.0) -> jnp.ndarray:
+    """
+    Compute lift coefficient using circulation around rectangular contour (Kutta-Joukowski).
+    Only integrates in fluid regions (mask > 0.5).
+
+    Args:
+        u: x-velocity field (cell-centered)
+        v: y-velocity field (cell-centered)
+        mask: Solid/fluid mask (1.0 = fluid, 0.0 = solid)
+        dx, dy: Grid spacing
+        U_inf: Freestream velocity
+        chord: Airfoil chord length
+        airfoil_x: Airfoil center x-position
+        airfoil_y: Airfoil center y-position
+        contour_margin: Margin around airfoil for contour (default 2.0)
+
+    Returns:
+        CL: Lift coefficient
+    """
+    # Define rectangular contour around airfoil
+    x_min = airfoil_x - chord/2 - contour_margin
+    x_max = airfoil_x + chord/2 + contour_margin
+    y_min = airfoil_y - chord/2 - contour_margin
+    y_max = airfoil_y + chord/2 + contour_margin
+
+    # Get indices
+    i_min = int(x_min / dx)
+    i_max = int(x_max / dx)
+    j_min = int(y_min / dy)
+    j_max = int(y_max / dy)
+
+    # Clamp to grid
+    nx, ny = u.shape
+    i_min = max(0, i_min)
+    i_max = min(nx - 1, i_max)
+    j_min = max(0, j_min)
+    j_max = min(ny - 1, j_max)
+
+    # Ensure i_max > i_min and j_max > j_min
+    if i_max <= i_min:
+        i_max = i_min + 1
+    if j_max <= j_min:
+        j_max = j_min + 1
+
+    # Diagnostics: print contour bounds and circulation
+    print(f"CIRCULATION CONTOUR DIAGNOSTICS:")
+    print(f"  Contour bounds: x=[{x_min:.2f}, {x_max:.2f}], y=[{y_min:.2f}, {y_max:.2f}]")
+    print(f"  Grid indices: i=[{i_min}, {i_max}], j=[{j_min}, {j_max}]")
+    print(f"  Domain bounds: x=[0, {nx*dx:.2f}], y=[0, {ny*dy:.2f}]")
+    print(f"  Contour clipped: {x_min < 0 or x_max > nx*dx or y_min < 0 or y_max > ny*dy}")
+
+    # Mask the velocity fields (set velocity to zero inside solid)
+    # Zero out velocities inside solid (mask < 0.5)
+    u_masked = u * (mask > 0.5).astype(float)
+    v_masked = v * (mask > 0.5).astype(float)
+
+    # Compute circulation on masked velocities (reverse sign for CCW contour)
+    # Bottom edge
+    gamma = jnp.sum(v_masked[i_min:i_max, j_min]) * dx
+    # Right edge
+    gamma += jnp.sum(u_masked[i_max, j_min:j_max]) * dy
+    # Top edge (negative direction)
+    gamma -= jnp.sum(v_masked[i_min:i_max, j_max]) * dx
+    # Left edge (negative direction)
+    gamma -= jnp.sum(u_masked[i_min, j_min:j_max]) * dy
+
+    # Reverse sign for CCW contour
+    gamma = -gamma
+
+    # Kutta-Joukowski: CL = 2 * gamma / (U_inf * chord)
+    CL = 2.0 * gamma / (U_inf * chord)
+
+    print(f"  Circulation gamma: {gamma:.6f}")
+    print(f"  Computed CL: {CL:.6f}")
+
+    return CL
+
+
+def compute_drag_momentum_deficit(u: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray,
+                                   dx: float, dy: float,
+                                   U_inf: float, chord: float,
+                                   airfoil_x: float, chord_length: float,
+                                   lx: float,
+                                   wake_location: float = 8.0) -> jnp.ndarray:
+    """
+    Compute drag coefficient from momentum deficit in the wake.
+
+    Args:
+        u: x-velocity field (cell-centered)
+        v: y-velocity field (cell-centered)
+        mask: Solid/fluid mask
+        dx, dy: Grid spacing
+        U_inf: Freestream velocity
+        chord: Airfoil chord length
+        airfoil_x: Airfoil center x-position
+        chord_length: Airfoil chord length
+        lx: Domain length
+        wake_location: X-position for wake measurement (default 8.0, deprecated)
+
+    Returns:
+        CD: Drag coefficient
+    """
+    # Find wake plane index (downstream of airfoil)
+    # Use 60% of domain length to avoid outlet boundary effects
+    wake_x = 0.6 * lx
+    i_wake = int(wake_x / dx)
+
+    nx = u.shape[0]
+    if i_wake >= nx:
+        return 0.0  # Not enough domain
+
+    # Velocity profile at wake plane
+    u_wake = u[i_wake, :]
+
+    # Only integrate in fluid region (not inside airfoil)
+    # Use mask interpolated to this plane
+    mask_wake = mask[i_wake, :] if mask.shape[0] > i_wake else mask
+
+    # Momentum deficit: ∫ (U_inf - u) * u dy (correct formula)
+    deficit = (U_inf - u_wake) * u_wake
+
+    # Only integrate where mask > 0.99 (pure fluid, avoid Brinkman transition zone)
+    fluid = (mask_wake > 0.99).astype(float)
+
+    # Only integrate where u < U_inf (true wake deficit, not acceleration regions)
+    wake_region = (u_wake < U_inf).astype(float)
+    integration_mask = fluid * wake_region
+
+    # Diagnostics: check for regions where u > U_inf (causes negative deficit)
+    u_gt_uinf = (u_wake > U_inf).astype(float)
+    n_gt_uinf = jnp.sum(u_gt_uinf * fluid)
+    n_wake = jnp.sum(wake_region * fluid)
+    if n_gt_uinf > 0:
+        print(f"WAKE PLANE DIAGNOSTICS (x={wake_x:.2f}):")
+        print(f"  Fluid cells: {jnp.sum(fluid)}, Wake cells (u<U_inf): {n_wake}, Acceleration cells (u>U_inf): {n_gt_uinf}")
+        print(f"  u_wake min: {jnp.min(u_wake * fluid):.4f}, max: {jnp.max(u_wake * fluid):.4f}, mean: {jnp.mean(u_wake * fluid):.4f}")
+        print(f"  U_inf: {U_inf:.4f}")
+
+    # Integrate only in wake region (where u < U_inf)
+    momentum_deficit = jnp.sum(deficit * integration_mask) * dy
+
+    # Drag coefficient: CD = (2 / (U_inf * chord)) * momentum_deficit
+    CD = 2.0 * momentum_deficit / (U_inf * chord)
+
+    if CD < 0:
+        print(f"WARNING: Negative CD = {CD:.4f}, momentum_deficit = {momentum_deficit:.4f}")
+
+    return CD
+
+
+def compute_forces_ibm(u: jnp.ndarray, v: jnp.ndarray, w: jnp.ndarray,
+                       x: jnp.ndarray, y: jnp.ndarray,
+                       mask: jnp.ndarray, dx: float, dy: float,
+                       U_inf: float, chord: float,
+                       airfoil_x: float, airfoil_y: float,
+                       lx: float,
+                       grid_type: str = 'collocated') -> Tuple[float, float]:
+    """
+    Compute forces using IBM-appropriate methods (circulation-based).
+
+    Args:
+        u: x-velocity field
+        v: y-velocity field
+        w: Vorticity field (not used in momentum deficit method)
+        x: X-coordinate grid
+        y: Y-coordinate grid
+        mask: Solid/fluid mask
+        dx, dy: Grid spacing
+        U_inf: Freestream velocity
+        chord: Airfoil chord length
+        airfoil_x: Airfoil center x-position
+        airfoil_y: Airfoil center y-position
+        lx: Domain length
+        grid_type: 'collocated' or 'mac'
+
+    Returns:
+        (CL, CD): Lift and drag coefficients
+    """
+    # For MAC grid, interpolate velocities to cell centers first
+    if grid_type == 'mac':
+        u_center, v_center = interpolate_to_cell_center(u, v)
+    else:
+        u_center, v_center = u, v
+
+    # Compute lift using circulation contour method with masking
+    CL = compute_lift_circulation_contour(u_center, v_center, mask, dx, dy,
+                                          U_inf, chord, airfoil_x, airfoil_y)
+
+    # Compute drag using momentum deficit method (IBM-appropriate)
+    CD = compute_drag_momentum_deficit(u_center, v_center, mask, dx, dy,
+                                      U_inf, chord, airfoil_x, chord, lx)
+
+    return float(CL), float(CD)

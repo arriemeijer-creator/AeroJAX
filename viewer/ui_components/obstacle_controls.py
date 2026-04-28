@@ -163,6 +163,9 @@ class ObstacleControls(CollapsibleGroupBox):
         self.apply_cylinder_btn = QPushButton("Apply")
         self.apply_cylinder_btn.setMaximumWidth(60)
         cylinder_layout.addWidget(self.apply_cylinder_btn)
+        
+        # Connect radius spinbox for live preview
+        self.cylinder_radius_spinbox.valueChanged.connect(self._on_cylinder_radius_changed)
 
         cylinder_layout.addStretch()
         self.cylinder_widget.setVisible(False)
@@ -263,6 +266,25 @@ class ObstacleControls(CollapsibleGroupBox):
         else:
             return
 
+        # Update store state with current slider position BEFORE changing obstacle type
+        # This ensures the new obstacle type gets the correct position from the start
+        if hasattr(self, 'x_position_slider') and hasattr(self, 'y_position_slider'):
+            # Get viewer to access grid dimensions
+            viewer = None
+            if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
+                if hasattr(self.parent_viewer, 'parent_viewer'):
+                    viewer = self.parent_viewer.parent_viewer
+                elif hasattr(self.parent_viewer, 'solver'):
+                    viewer = self.parent_viewer
+            
+            if viewer is not None and hasattr(viewer, 'solver'):
+                grid_lx = viewer.solver.grid.lx
+                grid_ly = viewer.solver.grid.ly
+                x_position = (self.x_position_slider.value() / 100.0) * grid_lx
+                y_position = (self.y_position_slider.value() / 100.0) * grid_ly
+                # Dispatch position update for the NEW obstacle type
+                store.dispatch(set_obstacle_position(obstacle_type, x_position, y_position))
+
         # Dispatch Redux action to update store state
         store.dispatch(set_obstacle_type(obstacle_type))
 
@@ -278,6 +300,28 @@ class ObstacleControls(CollapsibleGroupBox):
         if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
             if hasattr(self.parent_viewer, 'on_obstacle_type_selected'):
                 self.parent_viewer.on_obstacle_type_selected(obstacle_type)
+
+    def _on_cylinder_radius_changed(self, value):
+        """Handle cylinder radius spinbox changes for live preview."""
+        # Get viewer to access solver
+        viewer = None
+        if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
+            if hasattr(self.parent_viewer, 'parent_viewer'):
+                viewer = self.parent_viewer.parent_viewer
+            elif hasattr(self.parent_viewer, 'solver'):
+                viewer = self.parent_viewer
+        
+        if viewer is not None and hasattr(viewer, 'solver'):
+            # Update cylinder radius in solver
+            import jax.numpy as jnp
+            viewer.solver.geom.radius = jnp.array(value)
+            
+            # Recompute mask for preview
+            viewer.solver.mask = viewer.solver._compute_mask()
+            
+            # Update obstacle outline preview
+            if hasattr(viewer, 'obstacle_renderer') and viewer.obstacle_renderer:
+                viewer.obstacle_renderer.update_obstacle_outlines(viewer.solver, force_update=True)
 
     def _on_x_position_changed(self, value):
         """Handle x-position slider changes."""

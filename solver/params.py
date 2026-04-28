@@ -103,9 +103,9 @@ def compute_characteristic_length(flow_type: str, geom, sim_params=None, obstacl
 @dataclass
 class FlowConstraints:
     """Constraint locks for flow parameters."""
-    lock_U: bool = True
+    lock_U: bool = False
     lock_nu: bool = True
-    lock_Re: bool = False
+    lock_Re: bool = True
     lock_L: bool = True
 
 
@@ -233,7 +233,7 @@ class TaylorGreenGeometryParams:
 def compute_eps_multiplier(Re: float) -> float:
     """
     Compute eps_multiplier based on Reynolds number.
-    Uses thicker masks for high Re to improve stability.
+    For solid bodies with Brinkman penalization, use epsilon in range 1e-2 to 1e-1.
 
     Args:
         Re: Reynolds number
@@ -241,35 +241,39 @@ def compute_eps_multiplier(Re: float) -> float:
     Returns:
         eps_multiplier: Multiplier for grid spacing to compute epsilon
     """
+    # For solid bodies with IBM, use epsilon in range 1e-2 to 1e-1
+    # This ensures the airfoil is truly solid (no flow leakage) while maintaining numerical stability
+    # Increased from 1e-8 to prevent division by zero in sigmoid mask computation
     if Re <= 1000:
-        return 0.01
+        return 0.05   # Larger for low Re
     elif Re <= 2000:
-        return 0.5  # Thicker mask for Re=2000
+        return 0.05   # For Re=2000
     elif Re <= 5000:
-        return 1.0  # Even thicker for higher Re
+        return 0.03   # Slightly smaller for higher Re
     else:
-        return 1.5  # Maximum thickness for very high Re
+        return 0.02   # Consistent for very high Re
 
 
 @dataclass
 class SimulationParams:
-    eps_multiplier: float = 0.01  # Grid-consistent ε: eps = eps_multiplier * dx (set by slider)
-    auto_eps_multiplier: bool = False  # If True, eps_multiplier is auto-computed from Re (disabled by default)
+    eps_multiplier: float = 0.1  # Grid-consistent ε: eps = eps_multiplier * dx
+    auto_eps_multiplier: bool = False  # If True, eps_multiplier is auto-computed from Re (disabled to use manual value)
     eps: float = 0.02  # Deprecated: will be computed as eps = eps_multiplier * grid.dx
+    solver_type: str = 'navier_stokes'  # 'navier_stokes' or 'lattice_boltzmann'
     advection_scheme: str = 'rk3'  # 'rk3', 'spectral', 'weno5', 'tvd'
     limiter: str = 'minmod'  # for TVD
     weno_epsilon: float = 1e-6  # for WENO
-    max_cfl: float = 0.3  # maximum CFL number
-    adaptive_dt: bool = False  # disabled to prevent timestep oscillation instability
-    fixed_dt: float = 0.01  # User-specified fixed timestep
-    pressure_solver: str = 'multigrid'  # 'cg', 'fft', 'multigrid', 'sor_masked', 'cg_masked'
+    max_cfl: float = 0.15  # maximum CFL number (reduced from 0.3 for stability at high Re)
+    adaptive_dt: bool = False  # CFL-based adaptive timestep (physics-based, no PID feedback loop)
+    fixed_dt: float = 1e-4  # User-specified fixed timestep (reduced to 1e-4 for divergence reduction)
+    pressure_solver: str = 'multigrid'  # 'cg', 'fft', 'multigrid', 'sor_masked', 'cg_masked' (CG not implemented)
     sor_omega: float = 1.5  # SOR relaxation parameter
-    pressure_max_iter: int = 100  # max iterations for iterative solvers
-    pressure_tolerance: float = 1e-6  # tolerance for early stopping
+    pressure_max_iter: int = 50  # max iterations for iterative solvers (reduced for CG performance)
+    pressure_tolerance: float = 1e-10  # tolerance for early stopping (tightened for high Re stability)
     multigrid_levels: int = 4  # multigrid grid coarsening levels
-    multigrid_v_cycles: int = 7  # multigrid V-cycles per solve
+    multigrid_v_cycles: int = 5  # multigrid V-cycles per solve (reduced for performance)
     flow_type: str = 'von_karman'  # 'von_karman', 'lid_driven_cavity', 'taylor_green'
-    dt_min: float = 1e-6  # Minimum timestep
+    dt_min: float = 5e-4  # Minimum timestep (increased to prevent solver instability at small dt)
     dt_max: float = 0.01   # Maximum timestep
     grid_type: str = 'collocated'  # 'collocated' or 'mac' (staggered grid)
 
@@ -280,6 +284,10 @@ class SimulationParams:
     naca_angle: float = 0.0  # Angle of attack in degrees (set to 0 to prevent extending near top boundary)
     naca_x: float = 2.0  # X position (will be scaled as 25% of lx when grid changes)
     naca_y: float = 1.5  # Y position (lowered from 2.25 to prevent thin fluid channel near top boundary)
+    
+    # Cow obstacle parameters
+    cow_x: float = 5.0  # X position for cow obstacle
+    cow_y: float = 1.3  # Y position for cow obstacle
     
     # LES/SGS model parameters
     use_les: bool = False  # Enable/disable LES
@@ -341,7 +349,7 @@ def get_re_parameters(Re: float, grid_nx: int = 512) -> dict:
             'nu_hyper_ratio': 0.01,    # 1% hyper-viscosity
             'advection_scheme': 'rk3_simple',
             'nu_h': 0.0,
-            'brinkman_eta': 1e-5,    # Solid obstacle with implicit penalization
+            'brinkman_eta': 1e-4,    # Fixed from 0.01 - too large, causing weak penalization
             'dt_max': 0.008,
             'cfl_target': 0.25,
         })
@@ -354,8 +362,8 @@ def get_re_parameters(Re: float, grid_nx: int = 512) -> dict:
             'advection_scheme': 'rk3_simple',
             'nu_h': 0.0,
             'brinkman_eta': 1e-6,    # Solid obstacle with implicit penalization
-            'dt_max': 0.005,
-            'cfl_target': 0.2,
+            'dt_max': 0.008,
+            'cfl_target': 0.35,
         })
 
     elif Re <= 1000000:
@@ -366,8 +374,8 @@ def get_re_parameters(Re: float, grid_nx: int = 512) -> dict:
             'advection_scheme': 'rk3_high',  # Switch to high-order with filtering
             'nu_h': 1e-5,
             'brinkman_eta': 1e-7,    # Solid obstacle with implicit penalization
-            'dt_max': 0.003,
-            'cfl_target': 0.15,
+            'dt_max': 0.006,
+            'cfl_target': 0.3,
         })
 
     elif Re <= 10000000:
@@ -378,8 +386,8 @@ def get_re_parameters(Re: float, grid_nx: int = 512) -> dict:
             'advection_scheme': 'rk3_high',
             'nu_h': 2e-5,
             'brinkman_eta': 1e-7,    # Solid obstacle with implicit penalization
-            'dt_max': 0.002,
-            'cfl_target': 0.1,
+            'dt_max': 0.004,
+            'cfl_target': 0.25,
         })
 
     else:
@@ -390,8 +398,8 @@ def get_re_parameters(Re: float, grid_nx: int = 512) -> dict:
             'advection_scheme': 'rk3_high',
             'nu_h': 3e-5,
             'brinkman_eta': 1e-7,    # Solid obstacle with implicit penalization
-            'dt_max': 0.001,
-            'cfl_target': 0.1,
+            'dt_max': 0.003,
+            'cfl_target': 0.2,
         })
     
     # Grid-aware adjustments

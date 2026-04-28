@@ -1,12 +1,15 @@
 import jax
 import jax.numpy as jnp
-from typing import Tuple
+from typing import Tuple, Literal
 
 @jax.jit(static_argnames=('flow_type', 'max_iter'))
-def poisson_jacobi(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float, max_iter: int = 1000, tolerance: float = 1e-6, flow_type: str = 'von_karman') -> jnp.ndarray:
+def poisson_jacobi(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float, max_iter: int = 1000, tolerance: float = 1e-6, flow_type: Literal['von_karman', 'lid_driven_cavity', 'taylor_green'] = 'von_karman') -> jnp.ndarray:
     """Simple Jacobi iterative solver for Poisson equation"""
     nx, ny = rhs.shape
     b = rhs
+    
+    # Apply immersed boundary mask to RHS
+    b = b * mask
     
     # Zero out RHS at Dirichlet boundaries based on flow type
     if flow_type == 'von_karman':
@@ -50,17 +53,45 @@ def poisson_jacobi(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float, ma
     return p
 
 @jax.jit(static_argnames=('flow_type', 'v_cycles'))
-def poisson_multigrid(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float, levels: int = 4, v_cycles: int = 5, tolerance: float = 1e-6, flow_type: str = 'von_karman') -> jnp.ndarray:
-    """Geometric Multigrid solver with non-periodic boundary conditions and convergence check"""
+def poisson_multigrid(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float, levels: int = 4, v_cycles: int = 5, tolerance: float = 1e-6, flow_type: Literal['von_karman', 'lid_driven_cavity', 'taylor_green'] = 'von_karman') -> jnp.ndarray:
+    """Geometric Multigrid solver with non-periodic boundary conditions and convergence check
+
+    Args:
+        rhs: Right-hand side (divergence/dt)
+        mask: Obstacle mask (1 = fluid, 0 = solid)
+        dx, dy: Grid spacing
+        levels: Number of multigrid levels
+        v_cycles: Number of V-cycles to perform
+        tolerance: Convergence tolerance
+        flow_type: Flow type for boundary conditions
+    """
     nx, ny = rhs.shape
     b = rhs  # rhs should already be divergence/dt computed by caller
 
+    # Do NOT mask RHS - pressure Poisson equation should be solved everywhere
+    # including inside the solid region
+
     # Zero out RHS at Dirichlet boundaries based on flow type
     if flow_type == 'von_karman':
-        # Inlet/outlet are Dirichlet BCs for von Karman
-        b = b.at[0, :].set(0.0)
-        b = b.at[-1, :].set(0.0)
-    # For LDC, no Dirichlet boundaries (closed cavity)
+        # Only outlet is Dirichlet (p=0), inlet is Neumann (∂p/∂x=0)
+        b = b.at[-1, :].set(0.0)  # Outlet: p = 0
+    elif flow_type == 'lid_driven_cavity':
+        # For LDC with pure Neumann BCs, enforce compatibility condition
+        b = b - jnp.mean(b)
+    # For Taylor-Green, periodic BCs (no Dirichlet boundaries)
+
+    # Early exit: check if already converged
+    def initial_laplacian(p):
+        pad_mode = 'edge' if flow_type in ['von_karman', 'lid_driven_cavity'] else 'wrap'
+        p_padded = jnp.pad(p, ((1, 1), (1, 1)), mode=pad_mode)
+        ax = 1.0 / (dx * dx)
+        ay = 1.0 / (dy * dy)
+        laplacian = ax * (p_padded[2:, 1:-1] + p_padded[:-2, 1:-1] - 2 * p) + \
+                     ay * (p_padded[1:-1, 2:] + p_padded[1:-1, :-2] - 2 * p)
+        return laplacian
+    
+    initial_residual = b - initial_laplacian(jnp.zeros_like(b))
+    initial_norm_sq = jnp.sum(initial_residual**2) * dx * dy
     
     # Check if grid is suitable for multigrid (must be divisible by 2^levels)
     max_levels = 1
@@ -124,8 +155,8 @@ def poisson_multigrid(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float,
         
         return fine
     
-    def smooth(p: jnp.ndarray, b: jnp.ndarray, nu: int = 2) -> jnp.ndarray:
-        """Gauss-Seidel smoother with non-periodic boundary conditions"""
+    def smooth(p: jnp.ndarray, b: jnp.ndarray, mask_level: jnp.ndarray, nu: int = 2) -> jnp.ndarray:
+        """Gauss-Seidel smoother - NO mask multiplication (pressure determined by physics)"""
         def smooth_step(p_state, i):
             p = p_state
             # Use ghost cells for non-periodic derivatives
@@ -140,50 +171,48 @@ def poisson_multigrid(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float,
         return p_final
 
     def apply_laplacian(p: jnp.ndarray) -> jnp.ndarray:
-        """Apply discrete Laplacian with flow-specific boundary conditions"""
+        """Apply discrete Laplacian - NO boundary conditions here (pure linear operator)"""
         # Use ghost cells for non-periodic derivatives
-        p_padded = jnp.pad(p, ((1, 1), (1, 1)), mode='edge')
+        # Choose padding mode based on flow type
+        pad_mode = 'edge' if flow_type in ['von_karman', 'lid_driven_cavity'] else 'wrap'
+        p_padded = jnp.pad(p, ((1, 1), (1, 1)), mode=pad_mode)
         ax = 1.0 / (dx * dx)
         ay = 1.0 / (dy * dy)
         laplacian = ax * (p_padded[2:, 1:-1] + p_padded[:-2, 1:-1] - 2 * p) + \
                      ay * (p_padded[1:-1, 2:] + p_padded[1:-1, :-2] - 2 * p)
-
-        # Apply boundary conditions based on flow type
-        if flow_type == 'von_karman':
-            # Inlet (left): Dirichlet BC (p = 0)
-            laplacian = laplacian.at[0, :].set(0.0)
-            # Outlet (right): Dirichlet BC (p = 0)
-            laplacian = laplacian.at[-1, :].set(0.0)
-            # Top/Bottom walls: Neumann BC (∂p/∂y = 0) - handled by edge padding
-        elif flow_type == 'lid_driven_cavity':
-            # All boundaries: Neumann BC (∂p/∂n = 0) for closed cavity
-            # Edge padding already handles Neumann BCs
-            pass
-        # For Taylor-Green, use periodic (handled by caller)
-
         return laplacian
     
-    # V-cycle implementation with safe levels
-    def v_cycle(p: jnp.ndarray, b: jnp.ndarray, level: int) -> jnp.ndarray:
+    # V-cycle implementation with mask propagation
+    def v_cycle(p: jnp.ndarray, b: jnp.ndarray, mask_level: jnp.ndarray, level: int) -> jnp.ndarray:
         if level >= max_levels:
-            return smooth(p, b, nu=10)  # Direct solve on coarsest grid
+            return smooth(p, b, mask_level, nu=10)  # Direct solve on coarsest grid
         
         # Pre-smooth
-        p = smooth(p, b, nu=2)
+        p = smooth(p, b, mask_level, nu=2)
         
-        # Restrict residual
+        # Apply boundary conditions after pre-smoothing
+        if flow_type == 'von_karman':
+            p = p.at[-1, :].set(0.0)     # Outlet: p = 0 (inlet is Neumann)
+        
+        # Restrict residual and mask
         r = b - apply_laplacian(p)
         r_coarse = restrict(r)
+        mask_coarse = restrict(mask_level)
+        mask_coarse = (mask_coarse > 0.5).astype(float)  # Threshold to keep binary
         
         # Coarse grid correction
-        e_coarse = v_cycle(jnp.zeros_like(r_coarse), r_coarse, level+1)
+        e_coarse = v_cycle(jnp.zeros_like(r_coarse), r_coarse, mask_coarse, level+1)
         e = prolong(e_coarse)
         
         # Add correction
         p = p + e
         
         # Post-smooth
-        p = smooth(p, b, nu=2)
+        p = smooth(p, b, mask_level, nu=2)
+        
+        # Apply boundary conditions after post-smoothing
+        if flow_type == 'von_karman':
+            p = p.at[-1, :].set(0.0)     # Outlet: p = 0 (inlet is Neumann)
         
         return p
     
@@ -195,14 +224,19 @@ def poisson_multigrid(rhs: jnp.ndarray, mask: jnp.ndarray, dx: float, dy: float,
         # Use jax.lax.cond to handle conditional on traced array
         p_new = jax.lax.cond(converged,
                             lambda: p,  # Already converged, return current p
-                            lambda: v_cycle(p, b, 0))  # Not converged, do V-cycle
-        # Compute residual norm
+                            lambda: v_cycle(p, b, mask, 0))  # Not converged, do V-cycle
+        # Compute residual norm squared (avoid sqrt for efficiency)
         residual = b - apply_laplacian(p_new)
-        residual_norm = jnp.sqrt(jnp.sum(residual**2) * dx * dy)
-        converged_new = residual_norm < tolerance
+        residual_norm_sq = jnp.sum(residual**2) * dx * dy
+        converged_new = residual_norm_sq < tolerance**2
         return (p_new, converged_new), None
     
     p_final, converged_final = jax.lax.scan(v_cycle_step, (p, False), jnp.arange(v_cycles))[0]
+
+    # For LDC with pure Neumann BCs, pin pressure at center to remove null space
+    if flow_type == 'lid_driven_cavity':
+        center_x, center_y = nx // 2, ny // 2
+        p_final = p_final - p_final[center_x, center_y]
 
     return p_final
 

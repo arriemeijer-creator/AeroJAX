@@ -69,9 +69,39 @@ class FloatingControlBar(QFrame):
         row1_layout.addStretch()
         main_layout.addLayout(row1_layout)
 
-        # Row 2: Error metrics and airfoil metrics checkboxes
+        # Row 2: Plot display checkboxes
         row2_layout = QHBoxLayout()
         row2_layout.setSpacing(5)
+
+        # Velocity toggle
+        self.show_velocity_cb = QCheckBox("Vel")
+        self.show_velocity_cb.setChecked(True)
+        self.show_velocity_cb.setToolTip("Velocity Plot")
+        row2_layout.addWidget(self.show_velocity_cb)
+
+        # Divergence toggle
+        self.show_divergence_cb = QCheckBox("Div")
+        self.show_divergence_cb.setChecked(False)
+        self.show_divergence_cb.setToolTip("Divergence Plot")
+        row2_layout.addWidget(self.show_divergence_cb)
+
+        # Vorticity toggle
+        self.show_vorticity_cb = QCheckBox("Vort")
+        self.show_vorticity_cb.setChecked(True)
+        self.show_vorticity_cb.setToolTip("Vorticity Plot")
+        row2_layout.addWidget(self.show_vorticity_cb)
+
+        # Pressure toggle
+        self.show_pressure_cb = QCheckBox("Press")
+        self.show_pressure_cb.setChecked(True)
+        self.show_pressure_cb.setToolTip("Pressure Plot")
+        row2_layout.addWidget(self.show_pressure_cb)
+
+        # Dye toggle
+        self.show_dye_cb = QCheckBox("Dye")
+        self.show_dye_cb.setChecked(True)
+        self.show_dye_cb.setToolTip("Dye Plot")
+        row2_layout.addWidget(self.show_dye_cb)
 
         # Error metrics toggle
         self.error_metrics_cb = QCheckBox("Err")
@@ -84,6 +114,12 @@ class FloatingControlBar(QFrame):
         self.airfoil_metrics_cb.setChecked(False)
         self.airfoil_metrics_cb.setToolTip("Airfoil Metrics")
         row2_layout.addWidget(self.airfoil_metrics_cb)
+
+        # Profiling overlay toggle
+        self.profiling_overlay_cb = QCheckBox("Prof")
+        self.profiling_overlay_cb.setChecked(False)
+        self.profiling_overlay_cb.setToolTip("Profiling Overlay")
+        row2_layout.addWidget(self.profiling_overlay_cb)
 
         row2_layout.addStretch()
         main_layout.addLayout(row2_layout)

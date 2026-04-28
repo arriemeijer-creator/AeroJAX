@@ -45,7 +45,7 @@ class NACAHandler:
             # Recompile solver with new geometry
             self.solver.mask = self.solver._compute_mask()
             jax.clear_caches()
-            self.solver._step_jit = jax.jit(self.solver._step)
+            self.solver._step_jit = self.solver.get_step_jit()
             
             # Update obstacle outlines immediately
             if hasattr(self, 'obstacle_renderer') and self.obstacle_renderer:
@@ -86,10 +86,13 @@ class NACAHandler:
             self.control_panel.angle_spinbox.blockSignals(False)
             self.control_panel.angle_slider.blockSignals(False)
         
-        # Update angle in real-time
+        # Update angle and recompute mask (fast enough for smooth drag)
+        # Note: Don't dispatch to Redux store - only update solver directly
+        # Store should only be updated when user explicitly clicks "Apply"
         if hasattr(self.solver, 'update_naca_angle'):
-            self.solver.update_naca_angle(angle_of_attack)
+            self.solver.update_naca_angle(angle_of_attack, recompute=True)
             
+            # Update visualization
             self.obstacle_renderer.update_obstacle_outlines(self.solver)
             self.sdf_viz.update_sdf_visualization(self.solver)
         
@@ -114,9 +117,11 @@ class NACAHandler:
         self.control_panel.angle_spinbox.blockSignals(False)
         self.control_panel.angle_slider.blockSignals(False)
         
-        # Update angle in real-time
+        # Update angle and recompute mask
+        # Note: Don't dispatch to Redux store - only update solver directly
+        # Store should only be updated when user explicitly clicks "Apply"
         if hasattr(self.solver, 'update_naca_angle'):
-            self.solver.update_naca_angle(spinbox_value)
+            self.solver.update_naca_angle(spinbox_value, recompute=True)
             
             # Update the outline visualization immediately
             self.obstacle_renderer.update_obstacle_outlines(self.solver)
@@ -129,18 +134,16 @@ class NACAHandler:
         if not hasattr(self.control_panel, 'angle_slider') or not self.control_panel.angle_slider:
             return
         
-        # Get the current slider value and ensure it's applied
+        # Get the current slider value and force cache clear to ensure new angle persists
         slider_value = self.control_panel.angle_slider.value()
         angle_of_attack = slider_value / 10.0
         
-        print(f"Slider released at angle: {angle_of_attack:.1f}°")
+        print(f"Slider released at angle: {angle_of_attack:.1f}° - clearing JAX cache to persist angle")
         
-        # Force update the angle to ensure it sticks
+        # Force update with cache clear to ensure new angle is properly traced
         if hasattr(self.solver, 'update_naca_angle'):
-            self.solver.update_naca_angle(angle_of_attack)
+            self.solver.update_naca_angle(angle_of_attack, recompute=True, clear_cache=True)
             
-            # Update the outline visualization immediately
+            # Update visualization
             self.obstacle_renderer.update_obstacle_outlines(self.solver)
             self.sdf_viz.update_sdf_visualization(self.solver)
-            
-            print(f"Angle maintained after release: {angle_of_attack:.1f}°")

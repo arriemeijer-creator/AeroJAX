@@ -20,20 +20,93 @@ class FlowManager:
         def store_subscriber(state):
             """Handle store state changes and apply to solver."""
             if hasattr(self, 'solver') and self.solver is not None:
-                # Check if obstacle type changed
+                # Check if obstacle type changed - MUST BE CHECKED FIRST before position changes
                 current_obstacle_type = getattr(self.solver.sim_params, 'obstacle_type', None)
                 new_obstacle_type = state.obstacle.obstacle_type
                 
+                obstacle_type_changed = False
                 if current_obstacle_type != new_obstacle_type:
                     print(f"[STORE SYNC] Applying obstacle type change: {current_obstacle_type} -> {new_obstacle_type}")
+                    
+                    # Track previous obstacle type to prevent position handler from recomputing mask
+                    self._previous_obstacle_type = current_obstacle_type
+                    
+                    # Apply position for new obstacle type BEFORE calling set_obstacle_type
+                    # This ensures the mask is computed with the correct position
+                    # Use the current slider position if available, otherwise use store state
+                    if new_obstacle_type == 'cylinder':
+                        # Get position from store state (which should have the slider position)
+                        new_cylinder_center_x = state.obstacle.cylinder_center_x
+                        new_cylinder_center_y = state.obstacle.cylinder_center_y
+                        if new_cylinder_center_x is not None or new_cylinder_center_y is not None:
+                            import jax.numpy as jnp
+                            if new_cylinder_center_x is not None:
+                                self.solver.geom.center_x = jnp.array(new_cylinder_center_x)
+                            if new_cylinder_center_y is not None:
+                                self.solver.geom.center_y = jnp.array(new_cylinder_center_y)
+                            print(f"[STORE SYNC] Setting cylinder position: x={new_cylinder_center_x}, y={new_cylinder_center_y}")
+                    elif new_obstacle_type == 'naca_airfoil':
+                        new_naca_x = state.obstacle.naca_x
+                        new_naca_y = state.obstacle.naca_y
+                        if new_naca_x is not None or new_naca_y is not None:
+                            if new_naca_x is not None:
+                                self.solver.sim_params.naca_x = new_naca_x
+                            if new_naca_y is not None:
+                                self.solver.sim_params.naca_y = new_naca_y
+                            print(f"[STORE SYNC] Setting NACA position: x={new_naca_x}, y={new_naca_y}")
+                    elif new_obstacle_type == 'cow':
+                        # Compute cow position based on current grid dimensions
+                        grid_lx = self.solver.grid.lx
+                        grid_ly = self.solver.grid.ly
+                        cow_x = grid_lx * 0.25  # 25% of domain width
+                        cow_y = grid_ly * 0.35  # 35% of domain height (grounded)
+                        self.solver.sim_params.cow_x = cow_x
+                        self.solver.sim_params.cow_y = cow_y
+                        print(f"[STORE SYNC] Setting cow position based on grid: x={cow_x}, y={cow_y}")
+                    
                     # Call solver API to handle obstacle type change (solver manages heavy logic)
                     self.solver.set_obstacle_type(new_obstacle_type)
+                    obstacle_type_changed = True
                     
                     # Update info panel
                     if hasattr(self, 'display_manager') and self.display_manager is not None:
                         self.display_manager._update_solver_info()
+                    
+                    # Skip position change check this iteration since obstacle type just changed
+                    # Position changes are handled above before set_obstacle_type is called
+                    return
                 
                 # Check if obstacle position changed (for live preview)
+                # Use the CURRENT obstacle type from solver (not store state) to avoid applying wrong position
+                current_obstacle_type_for_position = getattr(self.solver.sim_params, 'obstacle_type', None)
+                new_obstacle_type = state.obstacle.obstacle_type
+                
+                print(f"[STORE SYNC] Position check: solver has {current_obstacle_type_for_position}, store has {new_obstacle_type}")
+                
+                # Skip position handling if obstacle type in store doesn't match solver
+                # This prevents applying position for the wrong obstacle type during transitions
+                if current_obstacle_type_for_position != new_obstacle_type:
+                    print(f"[STORE SYNC] Skipping position check: solver has {current_obstacle_type_for_position}, store has {new_obstacle_type}")
+                    return
+                
+                # Additional check: if solver has naca_airfoil but cylinder position changed, skip
+                # This happens when SET_OBSTACLE_POSITION is dispatched for cylinder before obstacle type changes
+                # Only skip if NACA position hasn't changed
+                if current_obstacle_type_for_position == 'naca_airfoil':
+                    current_cylinder_center_x = getattr(self.solver.geom, 'center_x', None)
+                    new_cylinder_center_x = state.obstacle.cylinder_center_x
+                    current_cylinder_center_y = getattr(self.solver.geom, 'center_y', None)
+                    new_cylinder_center_y = state.obstacle.cylinder_center_y
+                    current_naca_x = getattr(self.solver.sim_params, 'naca_x', None)
+                    new_naca_x = state.obstacle.naca_x
+                    current_naca_y = getattr(self.solver.sim_params, 'naca_y', None)
+                    new_naca_y = state.obstacle.naca_y
+                    # Skip only if cylinder changed but NACA didn't change
+                    if (current_cylinder_center_x != new_cylinder_center_x or current_cylinder_center_y != new_cylinder_center_y) and \
+                       (current_naca_x == new_naca_x and current_naca_y == new_naca_y):
+                        print(f"[STORE SYNC] Skipping cylinder position change while solver has naca_airfoil (NACA unchanged)")
+                        return
+                
                 current_naca_x = getattr(self.solver.sim_params, 'naca_x', None)
                 new_naca_x = state.obstacle.naca_x
                 current_naca_y = getattr(self.solver.sim_params, 'naca_y', None)
@@ -52,7 +125,7 @@ class FlowManager:
                 new_three_cylinder_y = state.obstacle.three_cylinder_y
                 
                 position_changed = False
-                if new_obstacle_type == 'naca_airfoil':
+                if current_obstacle_type_for_position == 'naca_airfoil':
                     if current_naca_x != new_naca_x or current_naca_y != new_naca_y:
                         position_changed = True
                         print(f"[STORE SYNC] NACA position changed: x {current_naca_x}->{new_naca_x}, y {current_naca_y}->{new_naca_y}")
@@ -60,7 +133,7 @@ class FlowManager:
                             self.solver.sim_params.naca_x = new_naca_x
                         if new_naca_y is not None:
                             self.solver.sim_params.naca_y = new_naca_y
-                elif new_obstacle_type == 'cylinder':
+                elif current_obstacle_type_for_position == 'cylinder':
                     if current_cylinder_center_x != new_cylinder_center_x or current_cylinder_center_y != new_cylinder_center_y:
                         position_changed = True
                         print(f"[STORE SYNC] Cylinder position changed: x {current_cylinder_center_x}->{new_cylinder_center_x}, y {current_cylinder_center_y}->{new_cylinder_center_y}")
@@ -69,7 +142,7 @@ class FlowManager:
                             self.solver.geom.center_x = jnp.array(new_cylinder_center_x)
                         if new_cylinder_center_y is not None:
                             self.solver.geom.center_y = jnp.array(new_cylinder_center_y)
-                elif new_obstacle_type == 'cow':
+                elif current_obstacle_type_for_position == 'cow':
                     if current_cow_x != new_cow_x or current_cow_y != new_cow_y:
                         position_changed = True
                         print(f"[STORE SYNC] Cow position changed: x {current_cow_x}->{new_cow_x}, y {current_cow_y}->{new_cow_y}")
@@ -80,7 +153,7 @@ class FlowManager:
                         # Clear JAX caches to force recompilation of cow mask with new position
                         import jax
                         jax.clear_caches()
-                elif new_obstacle_type == 'three_cylinder_array':
+                elif current_obstacle_type_for_position == 'three_cylinder_array':
                     if current_three_cylinder_x != new_three_cylinder_x or current_three_cylinder_y != new_three_cylinder_y:
                         position_changed = True
                         print(f"[STORE SYNC] Three cylinder array position changed: x {current_three_cylinder_x}->{new_three_cylinder_x}, y {current_three_cylinder_y}->{new_three_cylinder_y}")
@@ -93,8 +166,20 @@ class FlowManager:
                     # Recompute mask with new position
                     print(f"[STORE SYNC] Recomputing mask for position change")
                     self.solver.mask = self.solver._compute_mask()
+                    # Only apply mask to velocity fields if simulation is running
+                    # This prevents accumulated mask artifacts when moving sliders before simulation starts
+                    try:
+                        if hasattr(self, 'sim_controller') and self.sim_controller.is_running():
+                            self.solver.u = self.solver.u * self.solver.mask
+                            self.solver.v = self.solver.v * self.solver.mask
+                    except AttributeError:
+                        # If is_running doesn't exist, assume simulation is not running
+                        pass
+                    # Recompile step function with new mask (for collocated grids)
+                    self.solver._jit_cache = {}
+                    self.solver._step_jit = self.solver.get_step_jit()
                     
-                    # Update obstacle preview for live feedback
+                    # Update obstacle preview for live feedback (always do this)
                     print(f"[STORE SYNC] Updating obstacle outlines")
                     if hasattr(self, 'obstacle_renderer') and self.obstacle_renderer:
                         self.obstacle_renderer.update_obstacle_outlines(self.solver, force_update=True)
@@ -113,6 +198,10 @@ class FlowManager:
                     self.solver.flow.Re = new_re
                     self.solver.flow.U_inf = new_u_inf
                     self.solver.flow.nu = new_nu
+                    
+                    # For LBM solver, update internal parameters when Re changes
+                    if hasattr(self.solver, 'update_flow_parameters'):
+                        self.solver.update_flow_parameters()
         
         # Subscribe to store changes
         self._store_unsubscribe = store.subscribe(store_subscriber)
@@ -160,6 +249,18 @@ class FlowManager:
                 time.sleep(0.1)
         
         try:
+            # Force clear arrays before flow type change to ensure grid dimensions update
+            if hasattr(self.solver, 'u'):
+                delattr(self.solver, 'u')
+            if hasattr(self.solver, 'v'):
+                delattr(self.solver, 'v')
+            if hasattr(self.solver, 'u_prev'):
+                delattr(self.solver, 'u_prev')
+            if hasattr(self.solver, 'v_prev'):
+                delattr(self.solver, 'v_prev')
+            if hasattr(self.solver, 'mask'):
+                delattr(self.solver, 'mask')
+            
             self.solver.apply_flow_type(selected_flow)
             
             # Update coordinates (grid coordinates are already created in apply_flow_type)
@@ -178,7 +279,7 @@ class FlowManager:
             # Recompile solver
             self.solver.mask = self.solver._compute_mask()
             jax.clear_caches()
-            self.solver._step_jit = jax.jit(self.solver._step)
+            self.solver._step_jit = self.solver.get_step_jit()
             
             # Stop simulation completely before recreating shared buffers
             if hasattr(self, 'sim_controller'):
@@ -193,9 +294,12 @@ class FlowManager:
                     self.sim_controller.simulation_worker.solver = self.solver
             
             # Recreate shared memory buffers with new grid dimensions
+            # For MAC grid, u has (nx+1, ny) and v has (nx, ny+1), but visualization uses cell-centered (nx, ny)
+            viz_nx = grid_nx
+            viz_ny = grid_ny
             if hasattr(self, 'sim_controller') and hasattr(self.sim_controller, 'simulation_worker'):
                 if self.sim_controller.simulation_worker is not None:
-                    self.sim_controller.simulation_worker.recreate_shared_buffers(grid_nx, grid_ny)
+                    self.sim_controller.simulation_worker.recreate_shared_buffers(viz_nx, viz_ny)
             
             # Allow adaptive dt for all flow types
             if selected_flow == 'lid_driven_cavity' and self.solver.sim_params.adaptive_dt:
@@ -213,13 +317,29 @@ class FlowManager:
             if hasattr(self.solver, 'v'):
                 delattr(self.solver, 'v')
             
-            # Reinitialize based on current flow type
-            if self.solver.sim_params.flow_type == 'lid_driven_cavity':
-                self.solver._initialize_cavity_flow()
-            elif self.solver.sim_params.flow_type == 'taylor_green':
-                self.solver._initialize_taylor_green_flow()
+            # Reinitialize based on current flow type (only for Navier-Stokes solver)
+            if hasattr(self.solver, '_initialize_cavity_flow'):
+                if self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                    self.solver._initialize_cavity_flow()
+                elif self.solver.sim_params.flow_type == 'taylor_green':
+                    self.solver._initialize_taylor_green_flow()
+                else:
+                    self.solver._initialize_von_karman_flow()
             else:
-                self.solver._initialize_von_karman_flow()
+                # LBM solver uses apply_flow_type instead
+                if hasattr(self.solver, 'apply_flow_type'):
+                    self.solver.apply_flow_type(self.solver.sim_params.flow_type)
+            
+            # Recompute mask for the new flow type
+            self.solver.mask = self.solver._compute_mask()
+            
+            # Clear JIT cache to ensure new mask is used
+            if hasattr(self.solver, '_jit_cache'):
+                self.solver._jit_cache.clear()
+            
+            # Recompile solver to pick up new mask using proper method
+            print(f"Recompiling solver after mask update for {self.solver.sim_params.flow_type}")
+            self.solver._step_jit = self.solver.get_step_jit()
             
             # Verify the arrays have correct dimensions
             if hasattr(self.solver, 'u') and hasattr(self.solver, 'v'):
@@ -230,38 +350,18 @@ class FlowManager:
             max_chord = min(actual_lx * 0.5, actual_ly * 0.6, 5.0)  # Max 50% of width, 60% of height, or 5.0
             self.control_panel.set_chord_range_for_domain(max_chord)
             
-            # Recreate visualization to ensure grid dimensions are properly updated
+            # Update visualization dimensions without clearing plot widget
             try:
-                self.plot_widget.clear()  # Clear old visualization from plot widget
-                from viewer.visualization import FlowVisualization
-                self.flow_viz = FlowVisualization(self.plot_widget, solver=self.solver)
+                # Update dimensions directly
+                self.flow_viz.current_nx = actual_nx
+                self.flow_viz.current_ny = actual_ny
+                self.flow_viz.current_lx = actual_lx
+                self.flow_viz.current_ly = actual_ly
+                self.flow_viz.current_y_min = 0.0
+                self.flow_viz.current_y_max = actual_ly
                 
-                # Reinitialize colormaps
-                self.flow_viz.set_initial_colormaps(
-                    velocity_colormap=self.config.viz_config.default_velocity_colormap,
-                    vorticity_colormap=self.config.viz_config.default_vorticity_colormap
-                )
-                
-                print(f"DEBUG: Calling update_plots_for_new_grid with nx={actual_nx}, ny={actual_ny}")
-                # Update visualization with new grid
+                # Update plot ranges
                 self.flow_viz.update_plots_for_new_grid(actual_nx, actual_ny, actual_lx, actual_ly)
-                print(f"DEBUG: After update_plots_for_new_grid, flow_viz current_nx={self.flow_viz.current_nx}, current_ny={self.flow_viz.current_ny}")
-                
-                # Initialize image items with dummy data and levels to prevent levels error
-                import numpy as np
-                dummy_data = np.zeros((actual_nx, actual_ny), dtype=np.float32)
-                if self.flow_viz.vel_img is not None:
-                    self.flow_viz.vel_img.setImage(dummy_data, levels=self.flow_viz.vel_levels, autoLevels=False)
-                if self.flow_viz.vort_img is not None:
-                    self.flow_viz.vort_img.setImage(dummy_data, levels=self.flow_viz.vort_levels, autoLevels=False)
-                
-                # Update info_panel visualization reference
-                if hasattr(self, 'info_panel') and self.info_panel:
-                    self.info_panel.set_visualization(self.flow_viz)
-                
-                # Update display_manager flow_viz reference
-                if hasattr(self, 'sim_controller') and hasattr(self.sim_controller, 'display_manager'):
-                    self.sim_controller.display_manager.flow_viz = self.flow_viz
             except Exception as viz_error:
                 print(f"ERROR during visualization recreation: {viz_error}")
                 import traceback
@@ -307,7 +407,9 @@ class FlowManager:
                 self.control_panel.cylinder_widget.setVisible(is_cylinder)
 
         # Update x-position slider to reflect current obstacle's x-position
+        # Block signals to prevent triggering position change dispatch
         if hasattr(self.control_panel, 'x_position_slider'):
+            self.control_panel.x_position_slider.blockSignals(True)
             grid_lx = self.solver.grid.lx
             if obstacle_type == 'cylinder':
                 current_x = float(self.solver.geom.center_x.item()) if hasattr(self.solver.geom.center_x, 'item') else float(self.solver.geom.center_x)
@@ -323,9 +425,12 @@ class FlowManager:
             percentage = int((current_x / grid_lx) * 100)
             self.control_panel.x_position_slider.setValue(percentage)
             self.control_panel.x_position_label.setText(f"{percentage}%")
+            self.control_panel.x_position_slider.blockSignals(False)
         
         # Update y-position slider to reflect current obstacle's y-position
+        # Block signals to prevent triggering position change dispatch
         if hasattr(self.control_panel, 'y_position_slider'):
+            self.control_panel.y_position_slider.blockSignals(True)
             grid_ly = self.solver.grid.ly
             if obstacle_type == 'cylinder':
                 current_y = float(self.solver.geom.center_y.item()) if hasattr(self.solver.geom.center_y, 'item') else float(self.solver.geom.center_y)
@@ -341,6 +446,7 @@ class FlowManager:
             percentage = int((current_y / grid_ly) * 100)
             self.control_panel.y_position_slider.setValue(percentage)
             self.control_panel.y_position_label.setText(f"{percentage}%")
+            self.control_panel.y_position_slider.blockSignals(False)
         
         # Update obstacle outlines to reflect new obstacle type
         if hasattr(self, 'obstacle_renderer') and self.obstacle_renderer:

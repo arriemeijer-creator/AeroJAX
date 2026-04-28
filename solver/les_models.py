@@ -8,12 +8,42 @@ from .operators import grad_x, grad_y
 
 
 @jax.jit
+def interpolate_to_cell_center(u: jnp.ndarray, v: jnp.ndarray) -> tuple:
+    """
+    Interpolate staggered velocities to cell centers.
+    u: (nx+1, ny) at x-faces -> u_center: (nx, ny)
+    v: (nx, ny+1) at y-faces -> v_center: (nx, ny)
+    """
+    u_center = 0.5 * (u[1:, :] + u[:-1, :])
+    v_center = 0.5 * (v[:, 1:] + v[:, :-1])
+    return u_center, v_center
+
+
+@jax.jit
 def compute_strain_rate(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float):
     """Compute strain rate magnitude |S| = sqrt(2*S_ij*S_ij)"""
-    du_dx = grad_x(u, dx)
-    du_dy = grad_y(u, dy)
-    dv_dx = grad_x(v, dx)
-    dv_dy = grad_y(v, dy)
+    # Check if u and v have staggered shapes (MAC grid)
+    # For MAC grid: u is (nx+1, ny), v is (nx, ny+1)
+    # For collocated: u and v are both (nx, ny)
+    u_shape = jnp.shape(u)
+    v_shape = jnp.shape(v)
+    nx, ny = u_shape[0] - 1, u_shape[1]  # Try to infer from u shape
+    is_mac = v_shape[0] == nx and v_shape[1] == (ny + 1) if nx > 0 else False
+    
+    if is_mac:
+        # Interpolate to cell centers for gradient computation
+        u_center, v_center = interpolate_to_cell_center(u, v)
+        u_grad = u_center
+        v_grad = v_center
+    else:
+        # Collocated grid - use directly
+        u_grad = u
+        v_grad = v
+    
+    du_dx = grad_x(u_grad, dx)
+    du_dy = grad_y(u_grad, dy)
+    dv_dx = grad_x(v_grad, dx)
+    dv_dy = grad_y(v_grad, dy)
     
     S_xx = du_dx
     S_yy = dv_dy
@@ -27,9 +57,12 @@ def compute_strain_rate(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float):
 @jax.jit
 def box_filter_2d(f: jnp.ndarray, dx: float, dy: float, filter_ratio: int = 2):
     """Test filter with width = filter_ratio * grid spacing (5-point stencil for 2Δ)"""
-    # Generate all offset pairs
-    offsets = [(i, j) for i in range(-filter_ratio, filter_ratio+1) 
-                for j in range(-filter_ratio, filter_ratio+1)]
+    # Generate all offset pairs using JAX meshgrid
+    offset_range = jnp.arange(-filter_ratio, filter_ratio + 1)
+    dx_offsets, dy_offsets = jnp.meshgrid(offset_range, offset_range, indexing='ij')
+    
+    # Flatten and stack for iteration
+    offsets = jnp.stack([dx_offsets.ravel(), dy_offsets.ravel()], axis=1)
     
     # Use jax.lax.scan to iterate over offsets and accumulate
     def accumulate(acc, offset):
@@ -37,7 +70,7 @@ def box_filter_2d(f: jnp.ndarray, dx: float, dy: float, filter_ratio: int = 2):
         rolled = jnp.roll(jnp.roll(f, i, axis=0), j, axis=1)
         return acc + rolled, None
     
-    f_filtered, _ = jax.lax.scan(accumulate, jnp.zeros_like(f), jnp.array(offsets))
+    f_filtered, _ = jax.lax.scan(accumulate, jnp.zeros_like(f), offsets)
     f_filtered = f_filtered / ((2*filter_ratio+1)**2)
     
     return f_filtered
@@ -52,20 +85,36 @@ def dynamic_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, de
         nu_sgs: eddy viscosity field
         C_d: dynamic coefficient field (for debugging)
     """
+    # Check if u and v have staggered shapes (MAC grid)
+    u_shape = jnp.shape(u)
+    v_shape = jnp.shape(v)
+    nx, ny = u_shape[0] - 1, u_shape[1]  # Try to infer from u shape
+    is_mac = v_shape[0] == nx and v_shape[1] == (ny + 1) if nx > 0 else False
+    
+    if is_mac:
+        # Interpolate to cell centers for all operations
+        u_center, v_center = interpolate_to_cell_center(u, v)
+        u_work = u_center
+        v_work = v_center
+    else:
+        # Collocated grid - use directly
+        u_work = u
+        v_work = v
+    
     # Step 1: Compute strain rate at grid level
-    S_mag, (du_dx, du_dy, dv_dx, dv_dy) = compute_strain_rate(u, v, dx, dy)
+    S_mag, (du_dx, du_dy, dv_dx, dv_dy) = compute_strain_rate(u_work, v_work, dx, dy)
     
     # Step 2: Apply test filter (coarser scale, αΔ)
-    u_test = box_filter_2d(u, dx, dy)
-    v_test = box_filter_2d(v, dx, dy)
+    u_test = box_filter_2d(u_work, dx, dy)
+    v_test = box_filter_2d(v_work, dx, dy)
     
     # Step 3: Compute strain rate at test level (use same dx, dy - filter handles coarsening)
     S_mag_test, _ = compute_strain_rate(u_test, v_test, dx, dy)
     
     # Step 4: Compute Leonard stress L_ij = ũ_iũ_j - (u_i u_j)_test
-    uu = u * u
-    uv = u * v
-    vv = v * v
+    uu = u_work * u_work
+    uv = u_work * v_work
+    vv = v_work * v_work
     
     uu_test = box_filter_2d(uu, dx, dy)
     uv_test = box_filter_2d(uv, dx, dy)
@@ -130,6 +179,22 @@ def dynamic_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, de
 @jax.jit
 def constant_smagorinsky(u: jnp.ndarray, v: jnp.ndarray, dx: float, dy: float, delta: float, C_s: float = 0.1):
     """Constant coefficient Smagorinsky model (C_s=0.1 for 2D turbulence)"""
-    S_mag, _ = compute_strain_rate(u, v, dx, dy)
+    # Check if u and v have staggered shapes (MAC grid)
+    u_shape = jnp.shape(u)
+    v_shape = jnp.shape(v)
+    nx, ny = u_shape[0] - 1, u_shape[1]  # Try to infer from u shape
+    is_mac = v_shape[0] == nx and v_shape[1] == (ny + 1) if nx > 0 else False
+    
+    if is_mac:
+        # Interpolate to cell centers for strain rate computation
+        u_center, v_center = interpolate_to_cell_center(u, v)
+        u_work = u_center
+        v_work = v_center
+    else:
+        # Collocated grid - use directly
+        u_work = u
+        v_work = v
+    
+    S_mag, _ = compute_strain_rate(u_work, v_work, dx, dy)
     nu_sgs = (C_s * delta)**2 * S_mag
     return nu_sgs

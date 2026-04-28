@@ -10,6 +10,7 @@ import gc
 from typing import Optional
 
 from solver import GridParams
+from solver.params import SimState
 from viewer.state import store, set_reynolds_number, set_u_inf, set_nu
 
 
@@ -108,76 +109,20 @@ class ParameterHandlers:
                 print(f"Recomputed mask with new ε = {self.solver.sim_params.eps:.4f}")
 
             # Recalculate dt based on new velocity for stability
-            if self.solver.sim_params.adaptive_dt:
-                # Disable adaptive dt for high velocities - use fixed dt instead
-                if new_U >= 3.0:
-                    self.solver.sim_params.adaptive_dt = False
-                    print(f"Disabling adaptive dt for high velocity U={new_U:.2f} m/s")
+            # Use Re-dependent parameters from params.py instead of hardcoded values
+            from solver.params import get_re_parameters
+            re_params = get_re_parameters(new_Re, self.solver.grid.nx)
+            cfl_target = re_params['cfl_target']
+            dt_max = re_params['dt_max']
 
-                    if new_U > 5.0:
-                        cfl_target = 0.2  # Increased from 0.05 for faster simulation
-                        dt_max = 0.005  # Increased from 0.001
-                    else:
-                        cfl_target = 0.3  # Increased from 0.1
-                        dt_max = 0.005  # Increased from 0.002
+            dx = self.solver.grid.dx
+            dy = self.solver.grid.dy
+            dt_cfl = cfl_target * min(dx, dy) / (new_U + 1e-8)
+            dt_diffusion = 0.25 * min(dx**2, dy**2) / new_nu
 
-                    dx = self.solver.grid.dx
-                    dy = self.solver.grid.dy
-                    dt_cfl = cfl_target * min(dx, dy) / (new_U + 1e-8)
-                    dt_diffusion = 0.25 * min(dx**2, dy**2) / new_nu
-
-                    self.solver.dt = min(dt_cfl, dt_diffusion, dt_max)
-                    self.solver.dt = max(self.solver.dt, self.solver.sim_params.dt_min)
-                    print(f"Using fixed dt for U={new_U:.2f} m/s: dt={self.solver.dt:.6f} (CFL={cfl_target})")
-                else:
-                    if new_U > 5.0:
-                        cfl_target = 0.05  # Very conservative for very high velocities
-                    elif new_U > 3.0:
-                        cfl_target = 0.1   # Conservative for high velocities
-                    elif new_U > 1.5:
-                        cfl_target = 0.15  # Conservative for moderate velocities
-                    else:
-                        cfl_target = 0.3   # Normal for low velocities
-
-                    # Further reduce CFL target for low viscosities (high Reynolds numbers)
-                    if new_nu < 1e-4:
-                        cfl_target = min(cfl_target, 0.02)  # More aggressive reduction for very low viscosity
-                    elif new_nu < 1e-3:
-                        cfl_target = min(cfl_target, 0.05)   # Moderate reduction for low viscosity
-                    elif new_nu < 2e-3:
-                        cfl_target = min(cfl_target, 0.1)    # Additional reduction for moderate-low viscosity
-
-                    # Add Reynolds number awareness - even with moderate velocity, high Re needs small CFL
-                    if hasattr(self.solver.flow, 'Re') and self.solver.flow.Re > 500:
-                        cfl_target = min(cfl_target, 0.1)   # Conservative for Re > 500
-                    if hasattr(self.solver.flow, 'Re') and self.solver.flow.Re > 1000:
-                        cfl_target = min(cfl_target, 0.1)    # Conservative for Re > 1000
-                    if hasattr(self.solver.flow, 'Re') and self.solver.flow.Re > 2000:
-                        cfl_target = min(cfl_target, 0.1)    # Conservative for Re > 2000
-
-                    dx = self.solver.grid.dx
-                    dy = self.solver.grid.dy
-                    dt_cfl = cfl_target * min(dx, dy) / (new_U + 1e-8)
-                    dt_diffusion = 0.25 * min(dx**2, dy**2) / new_nu
-
-                    # Reduce dt_max for low viscosity and high velocity
-                    dt_max = self.solver.sim_params.dt_max
-                    if new_nu < 1e-4:
-                        dt_max = min(dt_max, 0.001)
-                    elif new_nu < 1e-3:
-                        dt_max = min(dt_max, 0.002)
-                    elif new_nu < 2e-3:
-                        dt_max = min(dt_max, 0.003)
-                    if new_U > 5.0:
-                        dt_max = min(dt_max, 0.001)  # Very conservative for U>5m/s
-                    elif new_U > 3.0:
-                        dt_max = min(dt_max, 0.002)  # Conservative for U>3m/s
-                    elif new_U > 1.5:
-                        dt_max = min(dt_max, 0.003)  # Conservative for U>1.5m/s
-
-                    self.solver.dt = min(dt_cfl, dt_diffusion, dt_max)
-                    self.solver.dt = max(self.solver.dt, self.solver.sim_params.dt_min)
-                    print(f"Recalculated dt for U={new_U:.2f} m/s: dt={self.solver.dt:.6f} (CFL={cfl_target})")
+            self.solver.dt = min(dt_cfl, dt_diffusion, dt_max)
+            self.solver.dt = max(self.solver.dt, self.solver.sim_params.dt_min)
+            print(f"Recalculated dt for U={new_U:.2f} m/s: dt={self.solver.dt:.6f} (CFL={cfl_target}, Re={new_Re:.0f})")
 
             # Update GUI to show the derived parameter (not the locked ones)
             if not self.solver.flow.constraints.lock_U:
@@ -187,25 +132,32 @@ class ParameterHandlers:
             if not self.solver.flow.constraints.lock_Re:
                 self.control_panel.re_input.setValue(int(self.solver.flow.Re))
 
-            self.solver._step_jit = jax.jit(self.solver._step)
+            self.solver._step_jit = self.solver.get_step_jit()
 
             # Restore LES settings that were preserved
             self.solver.sim_params.use_les = current_use_les
             self.solver.sim_params.les_model = current_les_model
             self.solver.sim_params.dynamic_smagorinsky = (current_les_model == "dynamic_smagorinsky")
 
+            # Update solver flow parameters BEFORE reinitializing
+            self.solver.flow.U_inf = new_U
+            self.solver.flow.nu = new_nu
+            self.solver.flow.Re = new_Re
+            self.solver.flow.L_char = L
+
             # Suggest grid refinement for high Re
             if new_Re > 15000 and self.solver.grid.nx < 1024:
                 print(f"WARNING: Re={new_Re:.0f} on {self.solver.grid.nx}×{self.solver.grid.ny} grid may be unstable.")
                 print(f"Suggested grid: {min(2048, self.solver.grid.nx*2)}×{min(768, self.solver.grid.ny*2)}")
 
-            # Reinitialize flow state with new parameters
-            if self.solver.sim_params.flow_type == 'von_karman':
-                self.solver._initialize_von_karman_flow()
-            elif self.solver.sim_params.flow_type == 'lid_driven_cavity':
-                self.solver._initialize_cavity_flow()
-            elif self.solver.sim_params.flow_type == 'taylor_green':
-                self.solver._initialize_taylor_green_flow()
+            # Reinitialize flow state with new parameters (only for Navier-Stokes solver)
+            if hasattr(self.solver, '_initialize_von_karman_flow'):
+                if self.solver.sim_params.flow_type == 'von_karman':
+                    self.solver._initialize_von_karman_flow()
+                elif self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                    self.solver._initialize_cavity_flow()
+                elif self.solver.sim_params.flow_type == 'taylor_green':
+                    self.solver._initialize_taylor_green_flow()
 
             # Preserve user-specified dt - do not recalculate when updating Re
             # The dt is set during solver initialization and should remain constant
@@ -295,12 +247,165 @@ class ParameterHandlers:
             print(f"Please manually change in solver/config.py:")
             print(f"  jax.config.update('jax_enable_x64', {enable_x64})")
     
+    def update_grid_type(self) -> None:
+        """Change the grid type between collocated and MAC staggered."""
+        new_grid_type = self.control_panel.grid_type_combo.currentData()
+        current_grid_type = self.solver.sim_params.grid_type
+        
+        if new_grid_type == current_grid_type:
+            print(f"Grid type already set to {new_grid_type}")
+            return
+        
+        print(f"Changing grid type from {current_grid_type} to {new_grid_type}")
+        
+        self.refresh_timer.stop()
+        self.sim_controller.stop_simulation()
+        
+        try:
+            # Clear ALL JAX caches before grid type change
+            jax.clear_caches()
+            
+            # Clear existing JIT compilations
+            if hasattr(self.solver, '_step_jit'):
+                delattr(self.solver, '_step_jit')
+            
+            # Clear ALL arrays including mask and scalar field to prevent shape mismatches
+            if hasattr(self.solver, 'u'):
+                delattr(self.solver, 'u')
+            if hasattr(self.solver, 'v'):
+                delattr(self.solver, 'v')
+            if hasattr(self.solver, 'u_prev'):
+                delattr(self.solver, 'u_prev')
+            if hasattr(self.solver, 'v_prev'):
+                delattr(self.solver, 'v_prev')
+            if hasattr(self.solver, 'mask'):
+                delattr(self.solver, 'mask')
+            if hasattr(self.solver, 'current_pressure'):
+                delattr(self.solver, 'current_pressure')
+            if hasattr(self.solver, 'c'):
+                delattr(self.solver, 'c')
+            
+            # Clear JIT cache
+            if hasattr(self.solver, '_jit_cache'):
+                self.solver._jit_cache = {}
+            
+            # Force garbage collection
+            gc.collect()
+            for _ in range(3):
+                gc.collect()
+            
+            # Update grid type in simulation parameters
+            self.solver.sim_params.grid_type = new_grid_type
+            
+            # Recompute mask for new grid type
+            self.solver.mask = self.solver._compute_mask()
+            
+            # Reinitialize flow based on new grid type (only if arrays were deleted)
+            # Use current grid dimensions to avoid reverting to wrong dimensions
+            if not hasattr(self.solver, 'u') or not hasattr(self.solver, 'v'):
+                # Save current grid dimensions
+                current_nx = self.solver.grid.nx
+                current_ny = self.solver.grid.ny
+                current_lx = self.solver.grid.lx
+                current_ly = self.solver.grid.ly
+                
+                if hasattr(self.solver, '_initialize_cavity_flow'):
+                    if self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                        self.solver._initialize_cavity_flow()
+                    elif self.solver.sim_params.flow_type == 'taylor_green':
+                        self.solver._initialize_taylor_green_flow()
+                    else:
+                        self.solver._initialize_von_karman_flow()
+                else:
+                    # LBM solver uses apply_flow_type instead
+                    if hasattr(self.solver, 'apply_flow_type'):
+                        self.solver.apply_flow_type(self.solver.sim_params.flow_type)
+                
+                # Restore grid dimensions if they changed during initialization
+                if self.solver.grid.nx != current_nx or self.solver.grid.ny != current_ny:
+                    print(f"WARNING: Grid dimensions changed during grid type change, restoring to {current_nx}x{current_ny}")
+                    self.solver.grid.nx = current_nx
+                    self.solver.grid.ny = current_ny
+                    self.solver.grid.lx = current_lx
+                    self.solver.grid.ly = current_ly
+                    # Recreate grid coordinates
+                    x = jnp.linspace(0, self.solver.grid.lx, self.solver.grid.nx)
+                    y = jnp.linspace(0, self.solver.grid.ly, self.solver.grid.ny)
+                    self.solver.grid.X, self.solver.grid.Y = jnp.meshgrid(x, y, indexing='ij')
+                    # Reinitialize with correct dimensions
+                    if self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                        self.solver._initialize_cavity_flow()
+                    elif self.solver.sim_params.flow_type == 'taylor_green':
+                        self.solver._initialize_taylor_green_flow()
+                    else:
+                        self.solver._initialize_von_karman_flow()
+            
+            # Update divergence/vorticity functions for new grid type
+            if new_grid_type == 'mac':
+                from solver.operators_mac import (
+                    divergence_staggered, divergence_nonperiodic_staggered,
+                    vorticity_staggered, vorticity_nonperiodic_staggered
+                )
+                if self.solver.sim_params.flow_type == 'von_karman' or self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                    self.solver._vorticity = jax.jit(vorticity_nonperiodic_staggered, static_argnums=(2, 3))
+                    self.solver._divergence = jax.jit(divergence_nonperiodic_staggered, static_argnums=(2, 3))
+                else:
+                    self.solver._vorticity = jax.jit(vorticity_staggered, static_argnums=(2, 3))
+                    self.solver._divergence = jax.jit(divergence_staggered, static_argnums=(2, 3))
+            else:
+                if self.solver.sim_params.flow_type == 'von_karman' or self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                    self.solver._vorticity = jax.jit(vorticity_nonperiodic, static_argnums=(2, 3))
+                    self.solver._divergence = jax.jit(divergence_nonperiodic, static_argnums=(2, 3))
+                else:
+                    self.solver._vorticity = jax.jit(vorticity, static_argnums=(2, 3))
+                    self.solver._divergence = jax.jit(divergence, static_argnums=(2, 3))
+            
+            # Recreate JIT function with new grid type
+            self.solver._step_jit = self.solver.get_step_jit()
+            
+            # Update state with new grid type
+            self.solver.state = SimState(
+                u=self.solver.u, v=self.solver.v, p=self.solver.current_pressure,
+                u_prev=self.solver.u_prev, v_prev=self.solver.v_prev, c=self.solver.c,
+                dt=self.solver.dt, iteration=self.solver.iteration,
+                grid_type=new_grid_type,
+                integral=self.solver.dt_controller.integral if self.solver.dt_controller else 0.0,
+                prev_error=self.solver.dt_controller.prev_error if self.solver.dt_controller else 0.0
+            )
+            
+            # Update visualization for new grid type
+            if hasattr(self, 'flow_viz'):
+                self.flow_viz.solver = self.solver
+            
+            print(f"Grid type successfully changed to {new_grid_type}")
+            print(f"New velocity shapes: u={self.solver.u.shape}, v={self.solver.v.shape}")
+            
+        except Exception as e:
+            print(f"ERROR: Failed to change grid type: {e}")
+            import traceback
+            traceback.print_exc()
+            # Restore original grid type
+            self.solver.sim_params.grid_type = current_grid_type
+    
     def update_grid_resolution(self) -> None:
         """Change the simulation grid resolution with uniform voxel scaling."""
         # Get custom grid dimensions from spinboxes
         grid_nx = self.control_panel.grid_x_spinbox.value()
         grid_ny = self.control_panel.grid_y_spinbox.value()
         current_flow = self.solver.sim_params.flow_type
+        
+        # Force square domain for lid-driven cavity
+        if current_flow == 'lid_driven_cavity':
+            # Use the larger dimension to ensure square domain
+            grid_nx = max(grid_nx, grid_ny)
+            grid_ny = grid_nx  # Force square
+            # Update spinboxes to reflect square domain
+            self.control_panel.grid_x_spinbox.blockSignals(True)
+            self.control_panel.grid_y_spinbox.blockSignals(True)
+            self.control_panel.grid_x_spinbox.setValue(grid_nx)
+            self.control_panel.grid_y_spinbox.setValue(grid_ny)
+            self.control_panel.grid_x_spinbox.blockSignals(False)
+            self.control_panel.grid_y_spinbox.blockSignals(False)
         
         # Calculate domain size to maintain uniform grid spacing (dx = dy)
         # Use base grid spacing from 512x128 with domain 20.0x5.0
@@ -388,6 +493,12 @@ class ParameterHandlers:
                 # Update cylinder position
                 self.solver.geom.center_x = jnp.array([cylinder_x])
                 self.solver.geom.center_y = jnp.array([cylinder_y])
+            
+            # Cow: 25% of domain width, 35% of domain height (grounded)
+            if hasattr(self.solver.sim_params, 'cow_x'):
+                self.solver.sim_params.cow_x = grid_lx * 0.25
+            if hasattr(self.solver.sim_params, 'cow_y'):
+                self.solver.sim_params.cow_y = grid_ly * 0.35
                 
                 # Update NACA position if using NACA airfoil
                 if hasattr(self.solver.sim_params, 'naca_airfoil') and self.solver.sim_params.naca_airfoil:
@@ -406,17 +517,22 @@ class ParameterHandlers:
             # Recreate mask AFTER updating obstacle positions
             self.solver.mask = self.solver._compute_mask()
             
-            # Reinitialize flow with new grid dimensions
-            if current_flow == 'lid_driven_cavity':
-                self.solver._initialize_cavity_flow()
-            elif current_flow == 'channel_flow':
-                self.solver._initialize_channel_flow()
-            elif current_flow == 'backward_step':
-                self.solver._initialize_backward_step_flow()
-            elif current_flow == 'taylor_green':
-                self.solver._initialize_taylor_green_flow()
+            # Reinitialize flow with new grid dimensions (only for Navier-Stokes solver)
+            if hasattr(self.solver, '_initialize_cavity_flow'):
+                if current_flow == 'lid_driven_cavity':
+                    self.solver._initialize_cavity_flow()
+                elif current_flow == 'channel_flow':
+                    self.solver._initialize_channel_flow()
+                elif current_flow == 'backward_step':
+                    self.solver._initialize_backward_step_flow()
+                elif current_flow == 'taylor_green':
+                    self.solver._initialize_taylor_green_flow()
+                else:
+                    self.solver._initialize_von_karman_flow()
             else:
-                self.solver._initialize_von_karman_flow()
+                # LBM solver uses apply_flow_type instead
+                if hasattr(self.solver, 'apply_flow_type'):
+                    self.solver.apply_flow_type(current_flow)
             
             # Reinitialize scalar field (dye concentration) with new grid dimensions
             self.solver.c = jnp.zeros((grid_nx, grid_ny))
@@ -429,7 +545,7 @@ class ParameterHandlers:
             
             # Recompile ALL JIT functions with error handling
             try:
-                self.solver._step_jit = jax.jit(self.solver._step)
+                self.solver._step_jit = self.solver.get_step_jit()
                 # Import required functions for JIT compilation
                 from solver import vorticity, divergence
                 self.solver._vorticity = jax.jit(vorticity, static_argnums=(2, 3))
@@ -437,19 +553,15 @@ class ParameterHandlers:
             except Exception as e:
                 print(f"Error recompiling JIT functions: {e}")
                 # Fallback: create minimal JIT functions
-                self.solver._step_jit = jax.jit(self.solver._step)
+                self.solver._step_jit = self.solver.get_step_jit()
             
-            # Update visualization - now handles outline recreation internally
+            # Update visualization with new grid dimensions
             try:
                 self.flow_viz.update_plots_for_new_grid(grid_nx, grid_ny, grid_lx, grid_ly)
             except Exception as viz_error:
                 print(f"Warning: Failed to update visualization: {viz_error}")
-                print("Attempting minimal visualization update...")
-                # Fallback: try to recreate just the basic plots
-                try:
-                    self.flow_viz.setup_plots(grid_nx, grid_ny, grid_lx, grid_ly)
-                except Exception as basic_error:
-                    print(f"Error: Even basic plot recreation failed: {basic_error}")
+                import traceback
+                traceback.print_exc()
             
             # Update simulation controller shared buffers for new grid size
             try:
@@ -510,7 +622,7 @@ class ParameterHandlers:
             try:
                 print("Attempting emergency recovery...")
                 # Recreate basic JIT functions
-                self.solver._step_jit = jax.jit(self.solver._step)
+                self.solver._step_jit = self.solver.get_step_jit()
                 print("Emergency recovery: basic JIT functions restored")
             except Exception as recovery_error:
                 print(f"Emergency recovery failed: {recovery_error}")
@@ -577,7 +689,7 @@ class ParameterHandlers:
             self.solver.mask = self.solver._compute_mask()
             
             # Recompile solver
-            self.solver._step_jit = jax.jit(self.solver._step)
+            self.solver._step_jit = self.solver.get_step_jit()
             
             # Update obstacle outlines
             if hasattr(self, 'obstacle_renderer') and self.obstacle_renderer:
@@ -602,15 +714,15 @@ class ParameterHandlers:
         self.is_paused = False
 
         try:
-            # Get new eps_multiplier from UI (slider value divided by 100)
+            # Get new eps_multiplier from UI (slider value divided by 1000 for new range)
             slider_value = self.control_panel.epsilon_slider.value()
-            new_eps_multiplier = float(slider_value) / 100.0
+            new_eps_multiplier = float(slider_value) / 1000.0
 
             # Safety clamp
             if new_eps_multiplier > 10:
                 print(f"WARNING: eps_multiplier {new_eps_multiplier:.2f} too large, clamping to 10")
                 new_eps_multiplier = 10.0
-                self.control_panel.epsilon_slider.setValue(int(new_eps_multiplier * 100))
+                self.control_panel.epsilon_slider.setValue(int(new_eps_multiplier * 1000))
                 self.control_panel.epsilon_label.setText(f"{new_eps_multiplier:.2f}")
 
             # Update epsilon in solver
@@ -626,19 +738,28 @@ class ParameterHandlers:
             print(f"Mask recomputed with eps={self.solver.sim_params.eps:.6f} (eps_multiplier={new_eps_multiplier})")
             print(f"Mask shape: {self.solver.mask.shape}, min: {self.solver.mask.min():.6f}, max: {self.solver.mask.max():.6f}")
 
+            # Force adaptive_dt=False to prevent dt mismatch
+            self.solver.sim_params.adaptive_dt = False
+
             # Clear JAX caches
             jax.clear_caches()
 
             # Recompile solver
-            self.solver._step_jit = jax.jit(self.solver._step)
+            self.solver._step_jit = self.solver.get_step_jit()
+            print(f"Forced adaptive_dt=False and recompiled _step_jit after mask recomputation")
 
-            # Reset flow state
-            if self.solver.sim_params.flow_type == 'von_karman':
-                self.solver._initialize_von_karman_flow()
-            elif self.solver.sim_params.flow_type == 'lid_driven_cavity':
-                self.solver._initialize_cavity_flow()
-            elif self.solver.sim_params.flow_type == 'taylor_green':
-                self.solver._initialize_taylor_green_flow()
+            # Reset flow state (only for Navier-Stokes solver)
+            if hasattr(self.solver, '_initialize_von_karman_flow'):
+                if self.solver.sim_params.flow_type == 'von_karman':
+                    self.solver._initialize_von_karman_flow()
+                elif self.solver.sim_params.flow_type == 'lid_driven_cavity':
+                    self.solver._initialize_cavity_flow()
+                elif self.solver.sim_params.flow_type == 'taylor_green':
+                    self.solver._initialize_taylor_green_flow()
+            else:
+                # LBM solver uses apply_flow_type instead
+                if hasattr(self.solver, 'apply_flow_type'):
+                    self.solver.apply_flow_type(self.solver.sim_params.flow_type)
 
             # Reset iteration and history
             self.solver.iteration = 0
@@ -650,7 +771,7 @@ class ParameterHandlers:
                                   # Continuity metrics
                                   'rms_divergence': [], 'l2_divergence': [],
                                   # Airfoil metrics
-                                  'airfoil_metrics': {'CL': [], 'CD': [], 'stagnation_x': [], 'separation_x': [], 'Cp_min': [], 'wake_deficit': []}}
+                                  'airfoil_metrics': {'CL': [], 'CD': [], 'stagnation_x': [], 'separation_x': [], 'Cp_min': [], 'wake_deficit': [], 'strouhal': []}}
 
             # Enable start button
             self.control_panel.start_btn.setEnabled(True)
@@ -706,59 +827,128 @@ class ParameterHandlers:
         # Store new settings before reset
         use_les = self.control_panel.les_checkbox.isChecked()
         les_model = self.control_panel.les_model_combo.currentText()
-        
+
         self.refresh_timer.stop()
         self.sim_controller.stop_simulation()
-        
+
         # Store current Reynolds settings to preserve them
         current_U = self.solver.flow.U_inf
         current_nu = self.solver.flow.nu
         current_Re = self.solver.flow.Re
         # Store current obstacle type to preserve it
         current_obstacle_type = self.solver.sim_params.obstacle_type
-        
+
         try:
             # Update solver parameters with stored values
             self.solver.sim_params.use_les = use_les
             self.solver.sim_params.les_model = les_model
-            
+
             # Set dynamic_smagorinsky based on model selection
             self.solver.sim_params.dynamic_smagorinsky = (les_model == "dynamic_smagorinsky")
-            
+
             # Recompile JIT functions if LES state changed
             if hasattr(self.solver, '_step_jit'):
                 delattr(self.solver, '_step_jit')
-            
+
             jax.clear_caches()
-            
+
             # Recompile step function with new LES settings using get_step_jit
             self.solver._step_jit = self.solver.get_step_jit()
             # Recompile other JIT functions
             from solver import vorticity, divergence
-            self.solver._vorticity = jax.jit(vorticity, static_argnums=(2, 3))
-            
-            # Restore Reynolds settings that were preserved
-            self.solver.flow.U_inf = current_U
-            self.solver.flow.nu = current_nu
-            self.solver.flow.Re = current_Re
-            self.solver._divergence = jax.jit(divergence, static_argnums=(2, 3))
-            
-            # Restore obstacle type that was preserved
-            self.solver.sim_params.obstacle_type = current_obstacle_type
-            
-            print(f"LES settings updated: use_les={use_les}, model={les_model}")
-            
-            # Update UI controls to show applied values
-            self.control_panel.les_checkbox.setChecked(use_les)
-            self.control_panel.les_model_combo.setCurrentText(les_model)
-            
-            self.control_panel.start_btn.setEnabled(True)
-            self.control_panel.pause_btn.setEnabled(False)
-            
+
         except Exception as e:
             print(f"Error updating LES settings: {e}")
             import traceback
             traceback.print_exc()
+
+        finally:
+            # Restore Reynolds settings
+            self.solver.flow.U_inf = current_U
+            self.solver.flow.nu = current_nu
+            self.solver.flow.Re = current_Re
+            # Restore obstacle type
+            self.solver.sim_params.obstacle_type = current_obstacle_type
+
+            self.sim_controller.start_simulation(self.sim_controller.callbacks)
+            self.refresh_timer.start()
+
+            print(f"LES settings updated: use_les={use_les}, model={les_model}")
+
+            # Update UI controls to show applied values
+            self.control_panel.les_checkbox.setChecked(use_les)
+            self.control_panel.les_model_combo.setCurrentText(les_model)
+
+            self.control_panel.start_btn.setEnabled(True)
+            self.control_panel.pause_btn.setEnabled(False)
+
+    def update_pressure_solver_settings(self) -> None:
+        """Update pressure solver settings."""
+        # Store new settings before reset
+        pressure_solver = self.control_panel.pressure_solver_combo.currentText()
+
+        # Check if CG is available when selected - NO FALLBACK
+        if pressure_solver == 'cg':
+            from solver.solver import CG_PRESSURE_AVAILABLE
+            if not CG_PRESSURE_AVAILABLE:
+                raise RuntimeError("CG pressure solver not available. Cannot proceed without fallback.")
+        
+        # Check if FFT is available when selected - NO FALLBACK
+        if pressure_solver == 'fft':
+            from solver.solver import FFT_PRESSURE_AVAILABLE
+            if not FFT_PRESSURE_AVAILABLE:
+                raise RuntimeError("FFT pressure solver not available. Cannot proceed without fallback.")
+
+        self.refresh_timer.stop()
+        self.sim_controller.stop_simulation()
+
+        # Store current Reynolds settings to preserve them
+        current_U = self.solver.flow.U_inf
+        current_nu = self.solver.flow.nu
+        current_Re = self.solver.flow.Re
+        # Store current obstacle type to preserve it
+        current_obstacle_type = self.solver.sim_params.obstacle_type
+
+        try:
+            # Update solver parameters
+            self.solver.sim_params.pressure_solver = pressure_solver
+
+            # Recompile JIT functions
+            if hasattr(self.solver, '_step_jit'):
+                delattr(self.solver, '_step_jit')
+
+            jax.clear_caches()
+
+            # Recompile step function with new pressure solver
+            self.solver._step_jit = self.solver.get_step_jit()
+
+            print(f"=== PRESSURE SOLVER CHANGE ===")
+            print(f"Selected: {pressure_solver}")
+            print(f"sim_params.pressure_solver: {self.solver.sim_params.pressure_solver}")
+            if pressure_solver == 'cg':
+                print(f"CG_PRESSURE_AVAILABLE: {CG_PRESSURE_AVAILABLE}")
+            elif pressure_solver == 'fft':
+                from solver.solver import FFT_PRESSURE_AVAILABLE
+                print(f"FFT_PRESSURE_AVAILABLE: {FFT_PRESSURE_AVAILABLE}")
+            print(f"============================")
+
+        except Exception as e:
+            print(f"Error updating pressure solver: {e}")
+            import traceback
+            traceback.print_exc()
+            raise  # Re-raise to ensure user knows it failed
+
+        finally:
+            # Restore Reynolds settings
+            self.solver.flow.U_inf = current_U
+            self.solver.flow.nu = current_nu
+            self.solver.flow.Re = current_Re
+            # Restore obstacle type
+            self.solver.sim_params.obstacle_type = current_obstacle_type
+
+            self.sim_controller.start_simulation(self.sim_controller.callbacks)
+            self.refresh_timer.start()
+
             self.control_panel.start_btn.setEnabled(True)
             self.control_panel.pause_btn.setEnabled(False)
 
@@ -803,7 +993,7 @@ class ParameterHandlers:
             self.control_panel.adaptive_dt_checkbox.setChecked(False)
             
             # Force recompilation
-            self.solver._step_jit = jax.jit(self.solver._step)
+            self.solver._step_jit = self.solver.get_step_jit()
 
         except Exception as dt_error:
             print(f"Error setting timestep: {dt_error}")
@@ -824,3 +1014,81 @@ class ParameterHandlers:
         if hasattr(self, 'refresh_timer'):
             self.refresh_timer.setInterval(int(1000 / vis_fps))
         print(f"Visualization rate set to {vis_fps} FPS")
+    
+    def update_solver_type(self) -> None:
+        """Switch between Navier-Stokes and Lattice Boltzmann solvers."""
+        self.refresh_timer.stop()
+        self.sim_controller.stop_simulation()
+        
+        # Get selected solver type
+        solver_type = self.control_panel.solver_type_combo.currentData()
+        print(f"Switching to solver type: {solver_type}")
+        
+        # Store current parameters
+        current_grid = self.solver.grid
+        current_flow = self.solver.flow
+        current_geom = self.solver.geom
+        current_sim_params = self.solver.sim_params
+        current_dt = self.solver.dt
+        
+        # Update simulation params
+        current_sim_params.solver_type = solver_type
+        
+        try:
+            if solver_type == 'lattice_boltzmann':
+                # Create LBM solver
+                from lbm.solver import LBMSolver
+                new_solver = LBMSolver(
+                    grid=current_grid,
+                    flow=current_flow,
+                    geom=current_geom,
+                    sim_params=current_sim_params,
+                    dt=current_dt
+                )
+                print("Created LBM solver")
+            else:
+                # Create Navier-Stokes solver
+                from solver import BaselineSolver
+                new_solver = BaselineSolver(
+                    grid=current_grid,
+                    flow=current_flow,
+                    geom=current_geom,
+                    sim_params=current_sim_params,
+                    dt=current_dt
+                )
+                print("Created Navier-Stokes solver")
+            
+            # Update solver reference
+            self.solver = new_solver
+            
+            # Update references in other components
+            self.sim_controller.solver = self.solver
+            self.flow_viz.solver = self.solver
+            self.info_panel.set_solver(self.solver)
+            if hasattr(self, 'obstacle_renderer'):
+                self.obstacle_renderer.solver = self.solver
+            
+            # Recompute mask and update visualization
+            self.solver.mask = self.solver._compute_mask()
+            if hasattr(self, 'obstacle_renderer'):
+                self.obstacle_renderer.update_obstacle_outlines(self.solver, force_update=True)
+            
+            # Clear JAX caches
+            jax.clear_caches()
+            gc.collect()
+            
+            print(f"Successfully switched to {solver_type} solver")
+            
+        except Exception as e:
+            print(f"Error switching solver: {e}")
+            import traceback
+            traceback.print_exc()
+            # Revert to previous solver
+            current_sim_params.solver_type = 'navier_stokes'
+            self.control_panel.solver_type_combo.blockSignals(True)
+            self.control_panel.solver_type_combo.setCurrentIndex(0)
+            self.control_panel.solver_type_combo.blockSignals(False)
+            return
+        
+        # Restart simulation
+        self.sim_controller.start_simulation(self.sim_controller.callbacks)

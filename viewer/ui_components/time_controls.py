@@ -27,7 +27,7 @@ class TimeControls(CollapsibleGroupBox):
         self.dt_spinbox.setRange(0.0001, 0.01)
         self.dt_spinbox.setDecimals(4)
         self.dt_spinbox.setSingleStep(0.0001)
-        self.dt_spinbox.setValue(0.01)  # Match default dt from config
+        self.dt_spinbox.setValue(0.005)  # Reduced from 0.01 for better stability
         self.dt_spinbox.setMaximumWidth(150)
         layout.addWidget(self.dt_spinbox)
 

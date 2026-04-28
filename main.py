@@ -18,7 +18,7 @@ from PyQt6.QtCore import QTimer, Qt
 import pyqtgraph as pg
 
 # Application modules
-from viewer.ui_components import ControlPanel, InfoPanel, FloatingControlBar
+from viewer.ui_components import ControlPanel, InfoPanel, FloatingControlBar, RightControlPanel
 from viewer.visualization import FlowVisualization, ObstacleRenderer, SDFVisualization
 from viewer.simulation_controller import SimulationController, RecordingManager, DataExporter
 from viewer.config import ConfigManager, PerformanceSettings
@@ -31,7 +31,7 @@ from viewer.modern_stylesheet import MODERN_DARK_THEME, MODERN_LIGHT_THEME
 # Solver imports
 from solver import (
     GridParams, FlowParams, FlowConstraints, GeometryParams, SimulationParams, 
-    CavityGeometryParams, BaselineSolver, compute_forces
+    CavityGeometryParams, BaselineSolver
 )
 
 # Optional modules - NACA airfoils
@@ -70,6 +70,20 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self._build_user_interface()
         self._connect_event_handlers()
         self._load_initial_state()
+        
+        # Initialize Redux store with solver's actual values to prevent subscription overwrites
+        from viewer.state import store, set_naca_angle, set_naca_x, set_naca_y, set_naca_chord, set_naca_airfoil, set_obstacle_type
+        if hasattr(self.solver.sim_params, 'naca_angle'):
+            store.dispatch(set_naca_angle(self.solver.sim_params.naca_angle))
+        if hasattr(self.solver.sim_params, 'naca_x'):
+            store.dispatch(set_naca_x(self.solver.sim_params.naca_x))
+        if hasattr(self.solver.sim_params, 'naca_y'):
+            store.dispatch(set_naca_y(self.solver.sim_params.naca_y))
+        if hasattr(self.solver.sim_params, 'naca_chord'):
+            store.dispatch(set_naca_chord(self.solver.sim_params.naca_chord))
+        if hasattr(self.solver.sim_params, 'naca_airfoil'):
+            store.dispatch(set_naca_airfoil(self.solver.sim_params.naca_airfoil))
+        store.dispatch(set_obstacle_type(self.solver.sim_params.obstacle_type))
         
         # Set up Redux store subscription for unidirectional data flow
         self.setup_store_subscription()
@@ -119,7 +133,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 'advection_scheme': self.solver.sim_params.advection_scheme,
                 'pressure_solver': self.solver.sim_params.pressure_solver,
                 'fixed_dt': self.solver.sim_params.fixed_dt,
-                'adaptive_dt': self.solver.sim_params.adaptive_dt,
+                'adaptive_dt': False,  # Force disabled to prevent dt mismatch
                 'use_les': self.solver.sim_params.use_les,
                 'les_model': self.solver.sim_params.les_model
             }
@@ -174,7 +188,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         )
         
         # Simulation management
-        self.sim_controller = SimulationController(self.solver, self.control_panel, self.info_panel)
+        self.sim_controller = SimulationController(self.solver, self.control_panel, self.info_panel, self.flow_viz)
         self.recording_manager = RecordingManager()
         self.data_exporter = DataExporter()
         
@@ -218,38 +232,38 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Create a splitter for resizable panels
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Left sidebar with control and info panels (30% initial width)
+        # Left sidebar with control panel (now uses full height)
         left_sidebar = QWidget()
         left_sidebar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left_layout = QVBoxLayout()
         left_layout.setSpacing(5)
         left_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Control panel (top of left sidebar) - 70% of vertical space
-        left_layout.addWidget(self.control_panel, 7)
-        
-        # Add a horizontal divider line
-        from PyQt6.QtWidgets import QFrame
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setFrameShadow(QFrame.Shadow.Sunken)
-        divider.setLineWidth(1)
-        divider.setMinimumHeight(2)
-        divider.setStyleSheet("QFrame { background-color: #888; border: none; }")
-        left_layout.addWidget(divider)
-        
-        # Info panel (bottom of left sidebar) - 30% of vertical space
-        left_layout.addWidget(self.info_panel, 3)
+        # Control panel (uses full height of left sidebar)
+        left_layout.addWidget(self.control_panel)
         
         left_sidebar.setLayout(left_layout)
         
-        # Right side with plot widget (70% initial width)
+        # Center with plot widget (50% initial width)
         self.plot_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        # Right sidebar with metrics panel (25% initial width)
+        self.right_control_panel = RightControlPanel()
+        # Move metrics groups from info_panel to right_control_panel
+        self.right_control_panel.set_metrics_groups(
+            self.info_panel.error_metrics_group,
+            self.info_panel.airfoil_metrics_group
+        )
+        # Move solver info group to right control panel
+        self.right_control_panel.set_solver_info_group(
+            self.info_panel.solver_info_group
+        )
         
         # Add widgets to splitter with initial sizes
         splitter.addWidget(left_sidebar)
         splitter.addWidget(self.plot_widget)
-        splitter.setSizes([480, 1120])  # Initial 30/70 split for 1600px width
+        splitter.addWidget(self.right_control_panel)
+        splitter.setSizes([320, 1040, 240])  # Initial 20/65/15 split for 1600px width
         
         main_layout.addWidget(splitter)
         main_widget.setLayout(main_layout)
@@ -278,6 +292,13 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.floating_control_bar.pressure_colormap_combo.currentTextChanged.connect(self.change_pressure_colormap)
         self.floating_control_bar.error_metrics_cb.stateChanged.connect(self.on_error_metrics_checkbox_changed)
         self.floating_control_bar.airfoil_metrics_cb.stateChanged.connect(self.on_airfoil_metrics_checkbox_changed)
+        
+        # Floating control bar plot toggles - sync with main GUI
+        self.floating_control_bar.show_velocity_cb.stateChanged.connect(self._sync_velocity_from_floating)
+        self.floating_control_bar.show_divergence_cb.stateChanged.connect(self._sync_divergence_from_floating)
+        self.floating_control_bar.show_vorticity_cb.stateChanged.connect(self._sync_vorticity_from_floating)
+        self.floating_control_bar.show_pressure_cb.stateChanged.connect(self._sync_pressure_from_floating)
+        self.floating_control_bar.show_dye_cb.stateChanged.connect(self._sync_dye_from_floating)
 
         # Floating control bar dye controls
         self.floating_control_bar.dye_x_slider.valueChanged.connect(self.update_dye_marker_from_sliders)
@@ -296,6 +317,8 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.info_panel.compute_airfoil_metrics_cb.toggled.connect(self._sync_airfoil_metrics_from_info_panel)
 
         self.control_panel.theme_toggle_btn.clicked.connect(self.toggle_theme)
+        self.control_panel.top_console.inverse_design_btn.clicked.connect(self.launch_inverse_design)
+        self.control_panel.top_console.thermal_btn.clicked.connect(self.launch_thermal_simulation)
         
         # Parameter controls
         self.control_panel.apply_re_btn.clicked.connect(self.update_reynolds_number)
@@ -310,6 +333,8 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.control_panel.lock_re_cb.stateChanged.connect(self.on_lock_re_changed)
         self.control_panel.apply_precision_btn.clicked.connect(self.update_precision)
         self.control_panel.apply_grid_btn.clicked.connect(self.update_grid_resolution)
+        self.control_panel.apply_grid_type_btn.clicked.connect(self.update_grid_type)
+        self.control_panel.apply_solver_type_btn.clicked.connect(self.update_solver_type)
         self.control_panel.apply_cylinder_btn.clicked.connect(self.update_cylinder_radius)
         self.control_panel.apply_cylinder_array_btn.clicked.connect(self.update_cylinder_array_params)
         self.control_panel.apply_epsilon_btn.clicked.connect(self.update_epsilon)
@@ -317,13 +342,18 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.control_panel.apply_frame_skip_btn.clicked.connect(self.update_frame_skip)
         self.control_panel.apply_vis_fps_btn.clicked.connect(self.update_visualization_fps)
         self.control_panel.apply_les_btn.clicked.connect(self.update_les_settings)
+        self.control_panel.apply_pressure_solver_btn.clicked.connect(self.update_pressure_solver_settings)
         self.control_panel.apply_vcycles_btn.clicked.connect(self.update_vcycles)
         
         # Visualization toggles
         self.control_panel.show_velocity_checkbox.stateChanged.connect(self.toggle_velocity_display)
         self.control_panel.show_vorticity_checkbox.stateChanged.connect(self.toggle_vorticity_display)
+        self.control_panel.show_pressure_checkbox.stateChanged.connect(self.toggle_pressure_display)
+        self.control_panel.show_dye_checkbox.stateChanged.connect(self.toggle_dye_display)
+        self.control_panel.particle_mode_checkbox.stateChanged.connect(self.toggle_particle_mode)
         self.control_panel.show_sdf_checkbox.stateChanged.connect(self.toggle_sdf_overlay)
         self.control_panel.show_streamlines_checkbox.stateChanged.connect(self.toggle_streamlines)
+        self.control_panel.show_quivers_checkbox.stateChanged.connect(self.toggle_quivers)
         self.control_panel.fast_mode_checkbox.stateChanged.connect(self.toggle_fast_mode)
         self.control_panel.velocity_colormap_combo.currentTextChanged.connect(self.change_velocity_colormap)
         self.control_panel.vorticity_colormap_combo.currentTextChanged.connect(self.change_vorticity_colormap)
@@ -352,11 +382,47 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Auto-scaling
         self.control_panel.autofit_velocity_btn.clicked.connect(self.auto_scale_velocity_plot)
         self.control_panel.autofit_vorticity_btn.clicked.connect(self.auto_scale_vorticity_plot)
-        self.control_panel.autofit_both_btn.clicked.connect(self.auto_scale_both_plots)
+        self.control_panel.autofit_pressure_btn.clicked.connect(self.auto_scale_pressure_plot)
+        self.control_panel.autofit_dye_btn.clicked.connect(self.auto_scale_dye_plot)
+        self.control_panel.autofit_all_btn.clicked.connect(self.auto_scale_all_plots)
         
         # Advanced features
-        # Temporarily disconnect adaptive dt checkbox to prevent automatic triggering
-        # self.control_panel.adaptive_dt_checkbox.stateChanged.connect(self.toggle_adaptive_timestep)
+        # Re-enabled with CFL-based adaptive dt (physics-based, no JIT compilation issues)
+        self.control_panel.adaptive_dt_checkbox.stateChanged.connect(self.toggle_adaptive_timestep)
+        
+        # Profiling overlay toggle
+        if hasattr(self.control_panel.visualization_controls, 'show_profiling_checkbox'):
+            self.control_panel.visualization_controls.show_profiling_checkbox.stateChanged.connect(self.toggle_profiling_overlay)
+        
+        # Floating control bar profiling toggle
+        if hasattr(self.floating_control_bar, 'profiling_overlay_cb'):
+            self.floating_control_bar.profiling_overlay_cb.stateChanged.connect(self.toggle_profiling_overlay)
+            # Sync with visualization controls checkbox
+            if hasattr(self.control_panel.visualization_controls, 'show_profiling_checkbox'):
+                self.floating_control_bar.profiling_overlay_cb.stateChanged.connect(
+                    lambda state: self.control_panel.visualization_controls.show_profiling_checkbox.setChecked(state == 2)
+                )
+                self.control_panel.visualization_controls.show_profiling_checkbox.stateChanged.connect(
+                    lambda state: self.floating_control_bar.profiling_overlay_cb.setChecked(state == 2)
+                )
+        
+        # Neural operator training controls
+        if hasattr(self.control_panel, 'neural_operator_training'):
+            self.control_panel.neural_operator_training.run_save_btn.clicked.connect(self.generate_training_dataset)
+            self.control_panel.neural_operator_training.train_btn.clicked.connect(self.train_neural_operator)
+            self.control_panel.neural_operator_training.load_model_btn.clicked.connect(self.load_trained_model)
+            self.control_panel.neural_operator_training.pressure_solver_combo.currentTextChanged.connect(self.switch_pressure_solver)
+            self.control_panel.neural_operator_training.cancel_training_btn.clicked.connect(self.cancel_training)
+        
+        # Training cancellation flag
+        self.training_cancel_flag = None
+        
+        # Training result signal for thread-safe UI updates
+        from PyQt6.QtCore import pyqtSignal, QObject
+        class TrainingSignals(QObject):
+            training_complete = pyqtSignal(str, str)  # (message, message_type)
+        self.training_signals = TrainingSignals()
+        self.training_signals.training_complete.connect(self.on_training_complete)
         
         if hasattr(self.control_panel, 'flow_combo'):
             self.control_panel.flow_combo.currentTextChanged.connect(self.on_flow_type_selected)
@@ -385,6 +451,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.sim_controller.callbacks = {
             'data_ready': self.handle_simulation_data,
             'fps_update': self.update_simulation_fps_display,
+            'profiling_update': self.handle_profiling_update,
             'metrics_ready': self.handle_metrics_data
         }
         
@@ -412,12 +479,13 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             try:
                 # Try to get outline items from flow_viz
                 vel_outline = getattr(self.flow_viz, 'vel_outline', None) if hasattr(self, 'flow_viz') else None
+                div_outline = getattr(self.flow_viz, 'div_outline', None) if hasattr(self, 'flow_viz') else None
                 vort_outline = getattr(self.flow_viz, 'vort_outline', None) if hasattr(self, 'flow_viz') else None
                 scalar_outline = getattr(self.flow_viz, 'scalar_outline', None) if hasattr(self, 'flow_viz') else None
                 pressure_outline = getattr(self.flow_viz, 'pressure_outline', None) if hasattr(self, 'flow_viz') else None
 
                 if vel_outline is not None and vort_outline is not None and scalar_outline is not None and pressure_outline is not None:
-                    self.obstacle_renderer = ObstacleRenderer(vel_outline, vort_outline, scalar_outline, pressure_outline)
+                    self.obstacle_renderer = ObstacleRenderer(vel_outline, div_outline, vort_outline, scalar_outline, pressure_outline)
                     print("Obstacle renderer created successfully in _load_initial_state")
                 else:
                     print(f"Warning: Outline items not available - vel_outline={vel_outline}, vort_outline={vort_outline}, scalar_outline={scalar_outline}, pressure_outline={pressure_outline}")
@@ -447,11 +515,24 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             self.control_panel.lock_re_cb.setChecked(self.solver.flow.constraints.lock_Re)
         self.control_panel.flow_combo.setCurrentText(self.solver.sim_params.flow_type)
         self.control_panel.dt_spinbox.setValue(self.solver.dt)
+        if hasattr(self.control_panel, 'pressure_solver_combo'):
+            self.control_panel.pressure_solver_combo.setCurrentText(self.solver.sim_params.pressure_solver)
+        
+        # Sync solver's enable_scalar_update with initial dye checkbox state
+        if hasattr(self.solver, 'enable_scalar_update'):
+            self.solver.enable_scalar_update = self.control_panel.show_dye_checkbox.isChecked()
         
         # Block signal during initial setup to prevent automatic triggering
         self.control_panel.adaptive_dt_checkbox.blockSignals(True)
-        # Keep adaptive dt checkbox checked by default (as set in ui_components.py)
+        # Force checkbox to unchecked state to match params.py default
+        self.control_panel.adaptive_dt_checkbox.setChecked(False)
         self.control_panel.adaptive_dt_checkbox.blockSignals(False)
+        
+        # Force adaptive_dt=False in solver params and recompile JIT
+        self.solver.sim_params.adaptive_dt = False
+        jax.clear_caches()
+        self.solver._step_jit = self.solver.get_step_jit()
+        print(f"Forced adaptive_dt=False and recompiled _step_jit")
         
         # Initialize NACA controls with current solver values
         if hasattr(self.control_panel, 'angle_spinbox') and self.control_panel.angle_spinbox is not None:
@@ -487,9 +568,19 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Initialize epsilon slider with current solver value
         if hasattr(self.control_panel, 'epsilon_slider'):
             epsilon_value = float(self.solver.sim_params.eps.item()) if hasattr(self.solver.sim_params.eps, 'item') else float(self.solver.sim_params.eps)
-            slider_value = int(epsilon_value * 100)  # Convert epsilon (0.01-0.50) to slider value (1-50)
-            self.control_panel.epsilon_slider.setValue(slider_value)
-            self.control_panel.epsilon_label.setText(f"{epsilon_value:.2f}")
+            eps_multiplier = self.solver.sim_params.eps_multiplier
+            # For very small epsilon values (1e-8), use scientific notation in label
+            if epsilon_value < 0.001:
+                self.control_panel.epsilon_label.setText(f"{epsilon_value:.2e}")
+                # Set slider to minimum value since it can't represent 1e-8 directly
+                self.control_panel.epsilon_slider.setValue(1)
+            else:
+                slider_value = int(eps_multiplier * 1000)  # Convert eps_multiplier to slider value (divided by 1000 in handler)
+                self.control_panel.epsilon_slider.setValue(slider_value)
+                self.control_panel.epsilon_label.setText(f"{eps_multiplier:.2f}")
+
+        # Update solver info display (grid size, epsilon, etc.)
+        self._update_solver_info()
         
         # Set up visualization scaling - now handled internally in setup_plots
         grid_nx, grid_ny = self.solver.grid.nx, self.solver.grid.ny
@@ -508,9 +599,10 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.refresh_timer.start(refresh_interval)
         
         # Activate adaptive dt mode on startup if checkbox is checked (moved here after timer creation)
-        if (hasattr(self.control_panel, 'adaptive_dt_checkbox') and 
-            self.control_panel.adaptive_dt_checkbox.isChecked()):
-            self.toggle_adaptive_timestep(2)  # Checked state
+        # DISABLED: Prevents adaptive_dt from overriding fixed dt
+        # if (hasattr(self.control_panel, 'adaptive_dt_checkbox') and 
+        #     self.control_panel.adaptive_dt_checkbox.isChecked()):
+        #     self.toggle_adaptive_timestep(2)  # Checked state
         
         # Update status displays
         self._update_solver_info()
@@ -531,6 +623,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 self.sim_controller.start_simulation({
                     'data_ready': self.handle_simulation_data,
                     'fps_update': self.update_simulation_fps_display,
+                    'profiling_update': self.handle_profiling_update,
                     'metrics_ready': self.handle_metrics_data
                 })
 
@@ -596,7 +689,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         
         new_sim_params = SimulationParams(
             eps=ic['simulation']['eps'],
-            eps_multiplier=ic['simulation'].get('eps_multiplier', 1.0),
+            eps_multiplier=ic['simulation'].get('eps_multiplier', 0.1),
             flow_type=ic['simulation']['flow_type'],
             obstacle_type=ic['simulation']['obstacle_type'],
             naca_airfoil=ic['simulation']['naca_airfoil'],
@@ -607,13 +700,21 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             advection_scheme=ic['simulation']['advection_scheme'],
             pressure_solver=ic['simulation']['pressure_solver'],
             fixed_dt=ic['simulation']['fixed_dt'],
-            adaptive_dt=ic['simulation']['adaptive_dt'],
+            adaptive_dt=False,  # Force disabled to prevent overriding fixed dt
             use_les=ic['simulation']['use_les'],
             les_model=ic['simulation']['les_model']
         )
         
-        # Create new solver instance
-        new_solver = BaselineSolver(new_grid, new_flow, new_geom, new_sim_params)
+        # Preserve current solver type when recreating solver
+        current_solver_type = getattr(self.solver.sim_params, 'solver_type', 'navier_stokes')
+        new_sim_params.solver_type = current_solver_type
+        
+        # Create new solver instance based on current solver type
+        if current_solver_type == 'lattice_boltzmann':
+            from lbm.solver import LBMSolver
+            new_solver = LBMSolver(new_grid, new_flow, new_geom, new_sim_params)
+        else:
+            new_solver = BaselineSolver(new_grid, new_flow, new_geom, new_sim_params)
         
         # Replace old solver
         self.solver = new_solver
@@ -734,7 +835,13 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.solver.sim_params.obstacle_angle = 0.0
         self.solver.sim_params.naca_airfoil = 'none'
         
-        self.solver._initialize_cavity_flow()
+        # Initialize flow based on solver type
+        if hasattr(self.solver, '_initialize_cavity_flow'):
+            self.solver._initialize_cavity_flow()
+        else:
+            # LBM solver uses apply_flow_type instead
+            if hasattr(self.solver, 'apply_flow_type'):
+                self.solver.apply_flow_type(self.solver.sim_params.flow_type)
         self.solver.mask = self.solver._compute_mask()
     
     # -------------------------------------------------------------------------
@@ -765,6 +872,36 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             # PlotItem uses setBrush for background
             self.flow_viz.vel_plot.getViewBox().setBackgroundColor(plot_bg)
             self.flow_viz.vort_plot.getViewBox().setBackgroundColor(plot_bg)
+    
+    def launch_inverse_design(self) -> None:
+        """Launch the inverse design application as a separate process"""
+        import subprocess
+        import sys
+        import os
+        
+        # Path to inverse design main.py
+        inverse_design_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                                          'inverse_design_WIP', 'main.py')
+        
+        try:
+            # Launch as separate process
+            subprocess.Popen([sys.executable, inverse_design_path])
+            print(f"Launched inverse design application from: {inverse_design_path}")
+        except Exception as e:
+            print(f"Error launching inverse design: {e}")
+
+    def launch_thermal_simulation(self) -> None:
+        """Launch the thermal simulation window"""
+        from viewer.thermal_simulation import ThermalSimulationWindow
+        
+        try:
+            self.thermal_window = ThermalSimulationWindow(self)
+            self.thermal_window.show()
+            print("Launched thermal simulation window")
+        except Exception as e:
+            print(f"Error launching thermal simulation: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _sync_floating_checkboxes(self) -> None:
         """Synchronize floating control bar checkboxes with info panel checkboxes."""
@@ -777,6 +914,55 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.floating_control_bar.airfoil_metrics_cb.blockSignals(True)
         self.floating_control_bar.airfoil_metrics_cb.setChecked(self.info_panel.compute_airfoil_metrics_cb.isChecked())
         self.floating_control_bar.airfoil_metrics_cb.blockSignals(False)
+        
+        # Sync plot toggles with main GUI
+        self.floating_control_bar.show_velocity_cb.blockSignals(True)
+        self.floating_control_bar.show_velocity_cb.setChecked(self.control_panel.show_velocity_checkbox.isChecked())
+        self.floating_control_bar.show_velocity_cb.blockSignals(False)
+        
+        self.floating_control_bar.show_vorticity_cb.blockSignals(True)
+        self.floating_control_bar.show_vorticity_cb.setChecked(self.control_panel.show_vorticity_checkbox.isChecked())
+        self.floating_control_bar.show_vorticity_cb.blockSignals(False)
+        
+        self.floating_control_bar.show_pressure_cb.blockSignals(True)
+        self.floating_control_bar.show_pressure_cb.setChecked(self.control_panel.show_pressure_checkbox.isChecked())
+        self.floating_control_bar.show_pressure_cb.blockSignals(False)
+        
+        self.floating_control_bar.show_dye_cb.blockSignals(True)
+        self.floating_control_bar.show_dye_cb.setChecked(self.control_panel.show_dye_checkbox.isChecked())
+        self.floating_control_bar.show_dye_cb.blockSignals(False)
+    
+    def _sync_velocity_from_floating(self, state) -> None:
+        """Sync velocity checkbox from floating control bar to main GUI."""
+        self.control_panel.show_velocity_checkbox.blockSignals(True)
+        self.control_panel.show_velocity_checkbox.setChecked(state == 2)
+        self.control_panel.show_velocity_checkbox.blockSignals(False)
+        self.toggle_velocity_display(state)
+    
+    def _sync_divergence_from_floating(self, state) -> None:
+        """Sync divergence checkbox from floating control bar to main GUI."""
+        self.toggle_divergence_display(state)
+    
+    def _sync_vorticity_from_floating(self, state) -> None:
+        """Sync vorticity checkbox from floating control bar to main GUI."""
+        self.control_panel.show_vorticity_checkbox.blockSignals(True)
+        self.control_panel.show_vorticity_checkbox.setChecked(state == 2)
+        self.control_panel.show_vorticity_checkbox.blockSignals(False)
+        self.toggle_vorticity_display(state)
+    
+    def _sync_pressure_from_floating(self, state) -> None:
+        """Sync pressure checkbox from floating control bar to main GUI."""
+        self.control_panel.show_pressure_checkbox.blockSignals(True)
+        self.control_panel.show_pressure_checkbox.setChecked(state == 2)
+        self.control_panel.show_pressure_checkbox.blockSignals(False)
+        self.toggle_pressure_display(state)
+    
+    def _sync_dye_from_floating(self, state) -> None:
+        """Sync dye checkbox from floating control bar to main GUI."""
+        self.control_panel.show_dye_checkbox.blockSignals(True)
+        self.control_panel.show_dye_checkbox.setChecked(state == 2)
+        self.control_panel.show_dye_checkbox.blockSignals(False)
+        self.toggle_dye_display(state)
 
     def _sync_error_metrics_from_info_panel(self, state) -> None:
         """Sync floating error metrics checkbox when info panel checkbox changes."""
@@ -858,9 +1044,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Call the existing handler to update metrics worker
         self.on_metrics_checkbox_changed(state)
 
-        # Toggle error plot visibility
-        if hasattr(self, 'flow_viz') and self.flow_viz and hasattr(self.flow_viz, 'l2_plot') and self.flow_viz.l2_plot:
-            self.flow_viz.l2_plot.setVisible(is_checked)
+        # Note: Error plot always stays visible, checkbox only controls metrics logging/plotting
     
     # -------------------------------------------------------------------------
     # Visualization Controls
@@ -880,6 +1064,38 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.flow_viz.set_visibility(self.config.viz_config.show_velocity, is_visible)
         print(f"Vorticity display {'on' if is_visible else 'off'}")
     
+    def toggle_divergence_display(self, state) -> None:
+        """Show or hide divergence visualization."""
+        is_visible = (state == 2)
+        self.flow_viz.set_divergence_visibility(is_visible)
+        print(f"Divergence display {'on' if is_visible else 'off'}")
+    
+    def toggle_pressure_display(self, state) -> None:
+        """Show or hide pressure visualization."""
+        is_visible = (state == 2)
+        self.config.viz_config.show_pressure = is_visible
+        self.flow_viz.set_pressure_visibility(is_visible)
+        print(f"Pressure display {'on' if is_visible else 'off'}")
+    
+    def toggle_dye_display(self, state) -> None:
+        """Show or hide dye visualization."""
+        is_visible = (state == 2)
+        self.config.viz_config.show_dye = is_visible
+        self.flow_viz.set_dye_visibility(is_visible)
+        # Enable scalar update in solver when dye is visible so dye can flow
+        if hasattr(self.solver, 'enable_scalar_update'):
+            self.solver.enable_scalar_update = is_visible
+        print(f"Dye display {'on' if is_visible else 'off'}")
+    
+    def toggle_particle_mode(self, state) -> None:
+        """Toggle between dye field and particle mode."""
+        use_particles = (state == 2)
+        self.flow_viz.set_particle_mode(use_particles)
+        # Disable scalar update when using particles (particles don't need dye field)
+        if hasattr(self.solver, 'enable_scalar_update'):
+            self.solver.enable_scalar_update = not use_particles
+        print(f"Particle mode {'on' if use_particles else 'off'}")
+    
     def toggle_sdf_overlay(self, state) -> None:
         """Show or hide the signed distance field mask."""
         is_visible = (state == 2)
@@ -887,7 +1103,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         print(f"SDF mask {'on' if is_visible else 'off'}")
     
     def inject_dye_at_slider_position(self):
-        """Inject dye at the position specified by sliders"""
+        """Inject dye or particles at the position specified by sliders"""
         # Get slider values (0-100 range)
         x_percent = self.control_panel.dye_x_slider.value() / 100.0
         y_percent = self.control_panel.dye_y_slider.value() / 100.0
@@ -896,8 +1112,13 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         x_pos = x_percent * self.solver.grid.lx
         y_pos = y_percent * self.solver.grid.ly
 
-        # Inject dye
-        self.solver.inject_dye(x_pos, y_pos, amount=0.5)
+        # Check if particle mode is active
+        if self.flow_viz.use_particles:
+            # Inject particles
+            self.flow_viz.inject_particles(x_pos, y_pos, count=10)
+        else:
+            # Inject dye
+            self.solver.inject_dye(x_pos, y_pos, amount=0.5)
 
     def inject_dye(self):
         """Inject dye at current slider position"""
@@ -1012,18 +1233,310 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         except ImportError as e:
             print(f"Error: Required dependencies for freeform drawing not available: {e}")
             print("Please ensure pygame and scipy are installed.")
-            self.flow_viz.scalar_plot.hide()
-            # Hide dye marker when scalar display is disabled
-            if hasattr(self.flow_viz, 'dye_marker') and self.flow_viz.dye_marker is not None:
-                self.flow_viz.dye_marker.setVisible(False)
-            print("Dye injection disabled")
     
+    def generate_training_dataset(self):
+        """Generate training dataset by running the simulation."""
+        try:
+            from PyQt6.QtWidgets import QProgressDialog
+            from PyQt6.QtCore import Qt
+            
+            from neural_operators.training_utils import generate_training_data
+            
+            # Get training configuration from UI
+            config = self.control_panel.neural_operator_training.get_training_config()
+            
+            print(f"Generating training dataset: {config['steps']} steps")
+            print(f"Output filename: {config['output_filename']}")
+            print(f"Fields to save: {config['save_fields']}")
+            
+            # Show progress dialog
+            progress = QProgressDialog("Generating training dataset...", "Cancel", 0, config['steps'], self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setWindowTitle("Dataset Generation")
+            progress.show()
+            
+            # Generate dataset
+            output_path = generate_training_data(
+                solver=self.solver,
+                num_steps=config['steps'],
+                save_fields=config['save_fields'],
+                output_filename=config['output_filename']
+            )
+            
+            progress.close()
+            
+            print(f"Training dataset saved to: {output_path}")
+            
+            # Show success message
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Success", f"Training dataset saved to:\n{output_path}")
+            
+        except Exception as e:
+            print(f"Error generating training dataset: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to generate training dataset:\n{str(e)}")
+    
+    def train_neural_operator(self):
+        """Train a neural operator on the generated dataset."""
+        try:
+            from PyQt6.QtWidgets import QFileDialog, QMessageBox
+            from neural_operators.training_utils import train_pressure_operator
+            import threading
+            
+            # Get training configuration from UI
+            config = self.control_panel.neural_operator_training.get_training_config()
+            
+            print(f"Training neural operator: {config['operator']}")
+            print(f"Architecture: {config['architecture']}")
+            print(f"Epochs: {config['epochs']}")
+            print(f"Learning rate: {config['learning_rate']}")
+            print(f"Batch size: {config['batch_size']}")
+            
+            # Select model class based on architecture
+            if config['architecture'] == 'Linear':
+                from neural_operators.nn_pressure_operator_linear import LearnedPressureOperator
+                model_params = {
+                    'in_channels': 2,
+                    'hidden_size': 64
+                }
+            elif config['architecture'] == 'NonLinear':
+                from neural_operators.nn_pressure_operator_nonlinear import NonLinearPressureOperator as LearnedPressureOperator
+                model_params = {
+                    'in_channels': 2,
+                    'features': 16
+                }
+            elif config['architecture'] == 'Advanced':
+                from neural_operators.nn_pressure_operator_advanced import AdvancedPressureOperator as LearnedPressureOperator
+                model_params = {
+                    'in_channels': 4,
+                    'features': 32
+                }
+            else:
+                raise ValueError(f"Unknown architecture: {config['architecture']}")
+            
+            # Ask user to select dataset file
+            dataset_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Training Dataset",
+                "",
+                "NPZ Files (*.npz);;All Files (*)"
+            )
+            
+            if not dataset_path:
+                print("Dataset selection cancelled")
+                return
+            
+            print(f"Training on dataset: {dataset_path}")
+            
+            # Ask user for output model path
+            default_filename = f"trained_pressure_model_{config['architecture'].lower()}.eqx"
+            output_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Trained Model",
+                default_filename,
+                "Equinox Model (*.eqx);;All Files (*)"
+            )
+            
+            if not output_path:
+                print("Output path selection cancelled")
+                return
+            
+            # Create cancellation flag
+            self.training_cancel_flag = threading.Event()
+            
+            # Enable cancel button and disable train button
+            self.control_panel.neural_operator_training.cancel_training_btn.setEnabled(True)
+            self.control_panel.neural_operator_training.train_btn.setEnabled(False)
+            
+            # Train the model in a thread
+            training_params = {
+                'epochs': config['epochs'],
+                'learning_rate': config['learning_rate'],
+                'batch_size': config['batch_size']
+            }
+            
+            def run_training():
+                try:
+                    print("Starting training...")
+                    trained_path = train_pressure_operator(
+                        dataset_path=dataset_path,
+                        model_class=LearnedPressureOperator,
+                        model_params=model_params,
+                        training_params=training_params,
+                        output_path=output_path,
+                        cancel_flag=self.training_cancel_flag
+                    )
+                    
+                    if trained_path:
+                        print(f"Trained model saved to: {trained_path}")
+                        # Emit signal for main thread to show message
+                        self.training_signals.training_complete.emit(f"Model trained successfully!\nSaved to:\n{trained_path}", "success")
+                    else:
+                        print("Training was cancelled")
+                        self.training_signals.training_complete.emit("Training was cancelled. Best checkpoint saved.", "cancelled")
+                        
+                except Exception as e:
+                    print(f"Error training neural operator: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.training_signals.training_complete.emit(f"Failed to train neural operator:\n{str(e)}", "error")
+                finally:
+                    # Re-enable train button and disable cancel button
+                    self.control_panel.neural_operator_training.train_btn.setEnabled(True)
+                    self.control_panel.neural_operator_training.cancel_training_btn.setEnabled(False)
+                    self.training_cancel_flag = None
+            
+            # Start training thread
+            training_thread = threading.Thread(target=run_training, daemon=True)
+            training_thread.start()
+            
+        except Exception as e:
+            print(f"Error setting up training: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to setup training:\n{str(e)}")
+    
+    def cancel_training(self):
+        """Cancel the current training process."""
+        if self.training_cancel_flag is not None:
+            print("Cancelling training...")
+            self.training_cancel_flag.set()
+        else:
+            print("No training in progress to cancel")
+    
+    def on_training_complete(self, message, message_type):
+        """Handle training completion signal (called on main thread)."""
+        from PyQt6.QtWidgets import QMessageBox
+        if message_type == "success":
+            QMessageBox.information(self, "Success", message)
+        elif message_type == "cancelled":
+            QMessageBox.information(self, "Cancelled", message)
+        elif message_type == "error":
+            QMessageBox.critical(self, "Error", message)
+    
+    def load_trained_model(self):
+        """Load a trained neural operator model from file."""
+        try:
+            from PyQt6.QtWidgets import QFileDialog, QMessageBox
+            from neural_operators.training_utils import load_trained_model
+            
+            # Ask user to select model file
+            model_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Trained Model",
+                "",
+                "Equinox Model (*.eqx);;All Files (*)"
+            )
+            
+            if not model_path:
+                print("Model selection cancelled")
+                return
+            
+            print(f"Loading model from: {model_path}")
+            
+            # Determine architecture from filename
+            if 'advanced' in model_path.lower():
+                from neural_operators.nn_pressure_operator_advanced import AdvancedPressureOperator as LearnedPressureOperator
+                model_params = {
+                    'in_channels': 4,
+                    'features': 32
+                }
+                architecture = 'Advanced'
+            elif 'nonlinear' in model_path.lower():
+                from neural_operators.nn_pressure_operator_nonlinear import NonLinearPressureOperator as LearnedPressureOperator
+                model_params = {
+                    'in_channels': 2,
+                    'features': 16
+                }
+                architecture = 'NonLinear'
+            else:
+                from neural_operators.nn_pressure_operator_linear import LearnedPressureOperator
+                model_params = {
+                    'in_channels': 2,
+                    'hidden_size': 64
+                }
+                architecture = 'Linear'
+            
+            # Load the model
+            model = load_trained_model(
+                model_class=LearnedPressureOperator,
+                model_params=model_params,
+                model_path=model_path
+            )
+            
+            # Update UI
+            self.control_panel.neural_operator_training.loaded_model_path.setText(model_path)
+            self.control_panel.neural_operator_training.arch_combo.setCurrentText(architecture)
+            
+            # Store model and architecture in solver
+            self.solver.nn_pressure_model = model
+            self.solver.nn_pressure_architecture = architecture
+            self.solver.sim_params.pressure_solver = 'nn'
+            
+            # Update pressure solver dropdown
+            self.control_panel.neural_operator_training.pressure_solver_combo.setCurrentText("Neural Network")
+            
+            print(f"Model loaded successfully ({architecture} architecture) and set as pressure solver")
+            
+            # Show success message
+            QMessageBox.information(self, "Success", f"Model loaded successfully!\nArchitecture: {architecture}\nUsing neural network for pressure solving.")
+            
+        except Exception as e:
+            print(f"Error loading trained model: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to load trained model:\n{str(e)}")
+    
+    def switch_pressure_solver(self, solver_name):
+        """Switch between multigrid and neural network pressure solvers."""
+        if solver_name == "Neural Network":
+            # Check if a model is loaded
+            model_path = self.control_panel.neural_operator_training.get_loaded_model_path()
+            if model_path is None:
+                print("No model loaded. Please load a trained model first.")
+                # Revert to multigrid
+                self.control_panel.neural_operator_training.pressure_solver_combo.blockSignals(True)
+                self.control_panel.neural_operator_training.pressure_solver_combo.setCurrentText("Multigrid")
+                self.control_panel.neural_operator_training.pressure_solver_combo.blockSignals(False)
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Warning", "No trained model loaded. Please load a model first using the 'Load Trained Model' button.")
+                return
+            
+            # Set neural network as pressure solver
+            self.solver.sim_params.pressure_solver = 'nn'
+            print("Switched to Neural Network pressure solver")
+        else:
+            # Set multigrid as pressure solver
+            self.solver.sim_params.pressure_solver = 'multigrid'
+            print("Switched to Multigrid pressure solver")
+        
+        # Recompile solver with new pressure solver
+        if hasattr(self.solver, '_step_jit'):
+            import jax
+            jax.clear_caches()
+            self.solver._step_jit = self.solver.get_step_jit()
+            print("Solver recompiled with new pressure solver")
+
     def toggle_streamlines(self, state):
         """Enable/disable streamlines visualization"""
         is_enabled = (state == 2)
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
             self.flow_viz.toggle_streamlines(is_enabled)
             print(f"Streamlines {'enabled' if is_enabled else 'disabled'}")
+    
+    def toggle_quivers(self, state):
+        """Enable/disable quivers visualization"""
+        is_enabled = (state == 2)
+        if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+            self.flow_viz.toggle_quivers(is_enabled)
+            print(f"Quivers {'enabled' if is_enabled else 'disabled'}")
     
     def toggle_fast_mode(self, state):
         """Enable/disable fast mode (RK2 vs RK3)"""
@@ -1035,20 +1548,18 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 self.sim_controller.stop_simulation()
             
             self.solver.sim_params.fast_mode = is_enabled
-            print(f"Fast Mode {'enabled (RK2 - Real-Time Interaction)' if is_enabled else 'disabled (RK3 - Scientific/F1 Grade)'}")
+            print(f"Fast Mode {'enabled (RK2 - Real-Time Interaction)' if is_enabled else 'disabled (RK3 - Higher Accuracy)'}")
             
             # Reset adaptive timestep controller if it exists
             if hasattr(self.solver, 'dt_controller') and self.solver.dt_controller is not None:
                 # Reset to initial timestep to account for different stability limits
-                from timestepping.adaptivedt import PIDController
-                target_div = 0.1 if is_enabled else 0.15  # RK2 needs tighter control
-                self.solver.dt_controller = PIDController(
-                    dt=self.solver.dt,
-                    target_divergence=target_div,
-                    kp=0.1, ki=0.01, kd=0.0,
-                    dt_min=1e-6, dt_max=self.solver.dt_max
+                from timestepping.cfl_adaptive_dt import CFLAdaptiveController
+                cfl_target = 0.2 if is_enabled else 0.3  # RK2 needs tighter CFL control
+                self.solver.dt_controller = CFLAdaptiveController(
+                    cfl_target=cfl_target,
+                    dt_min=self.solver.sim_params.dt_min, dt_max=self.solver.dt_max
                 )
-                print(f"Adaptive dt controller reset with target_div={target_div}")
+                print(f"CFL adaptive dt controller reset with cfl_target={cfl_target}")
             
             # Clear JAX cache to recompile with new fast_mode setting
             import jax
@@ -1060,7 +1571,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             
             # Recompile solver with new fast_mode
             if hasattr(self.solver, '_step_jit'):
-                self.solver._step_jit = jax.jit(self.solver._step)
+                self.solver._step_jit = self.solver.get_step_jit()
             
             # Re-enable start button
             if hasattr(self.control_panel, 'start_btn'):
@@ -1134,10 +1645,20 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
             self.flow_viz.auto_fit_vorticity()
     
-    def auto_scale_both_plots(self) -> None:
-        """Adjust both plots to fit their current data."""
+    def auto_scale_pressure_plot(self) -> None:
+        """Adjust pressure plot scale to fit current data."""
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
-            self.flow_viz.auto_fit_both()
+            self.flow_viz.auto_fit_pressure()
+    
+    def auto_scale_dye_plot(self) -> None:
+        """Adjust dye plot scale to fit current data."""
+        if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+            self.flow_viz.auto_fit_dye()
+    
+    def auto_scale_all_plots(self) -> None:
+        """Adjust all plots to fit their current data."""
+        if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+            self.flow_viz.auto_fit_all()
     
     def reset_plot_view(self) -> None:
         """Reset plot boundaries to the original domain extents."""
@@ -1186,7 +1707,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 
                 # Only basic recompilation - skip complex operations
                 try:
-                    self.solver._step_jit = jax.jit(self.solver._step)
+                    self.solver._step_jit = self.solver.get_step_jit()
                     print("DEBUG: Basic JIT recompilation for adaptive dt")
                 except Exception as jit_error:
                     print(f"Warning: JIT recompilation failed: {jit_error}")
@@ -1213,7 +1734,7 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 self.control_panel.apply_dt_btn.setEnabled(True)
                 self.control_panel.dt_spinbox.setValue(0.001)
                 self.control_panel.adaptive_dt_checkbox.setChecked(False)
-                self.solver._step_jit = jax.jit(self.solver._step)
+                self.solver._step_jit = self.solver.get_step_jit()
                 print("Emergency recovery: fixed dt mode restored")
             except Exception as recovery_error:
                 print(f"Emergency recovery failed: {recovery_error}")
@@ -1282,13 +1803,9 @@ def main() -> None:
         # Create QApplication first (required for splash screen)
         app = QApplication(sys.argv)
         
-        from PyQt6.QtGui import QPixmap
-        from PyQt6.QtWidgets import QSplashScreen
-        from PyQt6.QtCore import Qt
+        from viewer.ui_components.splash_screen import SplashScreen
         
-        splash_pixmap = QPixmap("viewer/ui_components/splash screen.png")
-        splash_pixmap = splash_pixmap.scaled(int(splash_pixmap.width() * 0.75), int(splash_pixmap.height() * 0.75), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        splash = QSplashScreen(splash_pixmap, Qt.WindowType.WindowStaysOnTopHint)
+        splash = SplashScreen("viewer/ui_components/splash screen.png")
         splash.show()
         app.processEvents()  # Force splash to render immediately
         
@@ -1302,12 +1819,12 @@ def main() -> None:
         sys.excepthook = handle_exception
         
         # Load configuration (this can be slow)
-        splash.showMessage("Loading configuration...")
+        splash.update_progress(10, "Loading configuration...")
         app.processEvents()
         config = ConfigManager()
         
         # Create solver with default settings
-        splash.showMessage("Creating simulation grid...")
+        splash.update_progress(25, "Creating simulation grid...")
         app.processEvents()
         grid = GridParams(
             nx=config.sim_config.default_nx, 
@@ -1316,7 +1833,7 @@ def main() -> None:
             ly=config.sim_config.default_ly
         )
         
-        splash.showMessage("Configuring flow parameters...")
+        splash.update_progress(40, "Configuring flow parameters...")
         app.processEvents()
         flow = FlowParams(
             Re=config.sim_config.default_reynolds,
@@ -1324,7 +1841,7 @@ def main() -> None:
             constraints=FlowConstraints(lock_U=False, lock_nu=True, lock_Re=True, lock_L=True)
         )
         
-        splash.showMessage("Setting up geometry...")
+        splash.update_progress(55, "Setting up geometry...")
         app.processEvents()
         geometry = GeometryParams(
             center_x=jnp.array(2.5), 
@@ -1334,15 +1851,16 @@ def main() -> None:
         
         simulation_params = SimulationParams(
             eps=0.01,
-            obstacle_type='naca_airfoil',
+            obstacle_type='naca_airfoil',  # Restore NACA airfoil
             naca_airfoil='NACA 0012',
             naca_x=2.5,
             naca_y=config.sim_config.default_ly / 2.0,  # Center in Y
             naca_chord=0.15 * config.sim_config.default_lx,  # 15% of domain width
-            naca_angle=10.0
+            naca_angle=10.0,
+            adaptive_dt=False  # Force disabled to prevent overriding fixed dt
         )
         
-        splash.showMessage("Initializing solver...")
+        splash.update_progress(70, "Initializing solver...")
         app.processEvents()
 
         # Clear JAX caches to force recompilation with updated code
@@ -1352,6 +1870,17 @@ def main() -> None:
             grid, flow, geometry, simulation_params,
             dt=config.sim_config.default_dt
         )
+        
+        # Force adaptive_dt=False and recompile JIT to prevent dt mismatch
+        try:
+            solver.sim_params.adaptive_dt = False
+            jax.clear_caches()
+            solver._step_jit = solver.get_step_jit()
+            print(f"Forced adaptive_dt=False and recompiled _step_jit")
+        except Exception as e:
+            print(f"ERROR forcing adaptive_dt=False: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Display simulation details
         X, Y = solver.grid.X, solver.grid.Y
@@ -1363,11 +1892,13 @@ def main() -> None:
         print(f"  Ready for vortex shedding visualization\n")
         
         # Create and show main window, then close splash
-        splash.showMessage("Building user interface...")
+        splash.update_progress(90, "Building user interface...")
         app.processEvents()
         viewer = BaselineViewerRefactored(solver, config)
         viewer.showMaximized()
-        splash.finish(viewer)  # This closes the splash screen
+        splash.update_progress(100, "Complete!")
+        app.processEvents()
+        splash.close()  # Close the splash screen
         
         # Add global exception handler
         def handle_exception(exc_type, exc_value, exc_traceback):

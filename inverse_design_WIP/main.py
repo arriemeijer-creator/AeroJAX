@@ -5,9 +5,24 @@ A JAX-based differentiable CFD framework for inverse airfoil design
 
 import sys
 import os
+import shutil
+
+# Clear pycache to avoid stale bytecode issues
+pycache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '__pycache__')
+if os.path.exists(pycache_dir):
+    try:
+        shutil.rmtree(pycache_dir)
+        print(f"Cleared pycache: {pycache_dir}")
+    except Exception as e:
+        print(f"Warning: Could not clear pycache: {e}")
 
 # Add parent directory to path to allow running as script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import JAX at top level to avoid circular import (like working main.py)
+import jax.numpy as jnp
+import jax
+
 import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -17,10 +32,12 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 
 from inverse_design_WIP.config import InverseDesignConfig
-from inverse_design_WIP.optimizer import InverseDesigner
+from inverse_design_WIP.optimizer_autodiff import InverseDesigner as InverseDesignerAutodiff
+from inverse_design_WIP.optimizer_finite_diff import InverseDesigner as InverseDesignerFiniteDiff
 from inverse_design_WIP.ui_components import (
     GoalSettingPanel, AirfoilSelectionPanel,
-    GridConfigPanel, OptimizationControlPanel
+    GridConfigPanel, OptimizationControlPanel,
+    VariableSelectionPanel
 )
 from inverse_design_WIP.visualization import InverseDesignVisualization, MetricsDisplay
 
@@ -40,8 +57,8 @@ class DifferentialBackpropagationApp(QMainWindow):
         
         self._setup_ui()
         self._setup_menu()
-        # Don't initialize solver - JAX fails on this Windows system
-        # Use surrogate model instead
+        # Initialize solver on startup
+        self._initialize_solver()
         
     def _setup_ui(self):
         """Setup the user interface"""
@@ -76,6 +93,10 @@ class DifferentialBackpropagationApp(QMainWindow):
         # Goals tab
         self.goals_panel = GoalSettingPanel(self.config)
         self.config_tabs.addTab(self.goals_panel, "Goals")
+        
+        # Variable selection tab
+        self.variable_panel = VariableSelectionPanel(self.config)
+        self.config_tabs.addTab(self.variable_panel, "Variables")
         
         # Optimization settings tab
         self.opt_control_panel = OptimizationControlPanel(self.config)
@@ -167,35 +188,40 @@ class DifferentialBackpropagationApp(QMainWindow):
             self.grid_params = GridParams(
                 nx=grid_config['nx'],
                 ny=grid_config['ny'],
-                Lx=grid_config['Lx'],
-                Ly=grid_config['Ly']
+                lx=grid_config['Lx'],
+                ly=grid_config['Ly']
             )
             
             # Create flow parameters
             self.flow_params = FlowParams(
-                u_inlet=grid_config['u_inlet'],
+                U_inf=grid_config['u_inlet'],
                 nu=grid_config['nu']
             )
             
             # Get airfoil configuration
             airfoil_config = self.airfoil_panel.get_airfoil_config()
             
-            # Create geometry parameters
+            # Create geometry parameters (simple cylinder for now)
+            # NACA parameters will be set in SimulationParams
+            import jax.numpy as jnp
             self.geometry_params = GeometryParams(
+                center_x=jnp.array(airfoil_config['position_x']),
+                center_y=jnp.array(airfoil_config['position_y']),
+                radius=jnp.array(airfoil_config['chord_length'] / 2.0)
+            )
+            
+            # Create simulation parameters with NACA configuration
+            self.sim_params = SimulationParams(
+                flow_type='von_karman',
+                fixed_dt=0.005,
+                advection_scheme='rk3',
+                pressure_solver='multigrid',
                 obstacle_type='naca_airfoil',
-                naca_designation=airfoil_config['designation'],
+                naca_airfoil=airfoil_config['designation'],
                 naca_chord=airfoil_config['chord_length'],
                 naca_angle=airfoil_config['angle_of_attack'],
                 naca_x=airfoil_config['position_x'],
                 naca_y=airfoil_config['position_y']
-            )
-            
-            # Create simulation parameters
-            self.sim_params = SimulationParams(
-                flow_type='von_karman',
-                dt=0.005,
-                advection_scheme='rk3',
-                pressure_solver='multigrid'
             )
             
             # Create solver
@@ -207,10 +233,12 @@ class DifferentialBackpropagationApp(QMainWindow):
             )
             
             self.status_bar.showMessage("Solver initialized successfully")
+            print("Solver initialized successfully")
             
         except Exception as e:
+            self.solver = None
             self.status_bar.showMessage(f"Error initializing solver: {e}")
-            print(f"Error: {e}")
+            print(f"Error initializing solver: {e}")
             import traceback
             traceback.print_exc()
     
@@ -222,8 +250,40 @@ class DifferentialBackpropagationApp(QMainWindow):
         # Update configuration from UI
         self._update_config_from_ui()
         
-        # Create optimizer
-        self.optimizer = InverseDesigner(self.solver, self.config)
+        # Require solver for optimization
+        if self.solver is None:
+            self.status_bar.showMessage("Error: Solver not initialized")
+            print("Error: Solver not initialized - cannot run optimization")
+            return
+        
+        # Create optimizer with solver and initial design parameters from UI
+        design_params = self.airfoil_panel.get_design_params()
+        initial_params = [
+            design_params['camber'],
+            design_params['camber_position'],
+            design_params['thickness'],
+            design_params['angle_of_attack']
+        ]
+        
+        # Get selected variables from config
+        selected_variables = {
+            'camber': self.config.goals.optimize_camber,
+            'camber_position': self.config.goals.optimize_camber_position,
+            'thickness': self.config.goals.optimize_thickness,
+            'aoa': self.config.goals.optimize_aoa
+        }
+        
+        # Get optimizer method selection
+        opt_settings = self.opt_control_panel.get_optimization_settings()
+        optimizer_method = opt_settings.get('optimizer_method', 'autodiff')
+        
+        # Create optimizer based on selection
+        if optimizer_method == 'autodiff':
+            self.optimizer = InverseDesignerAutodiff(self.solver, self.config, initial_params=initial_params, selected_variables=selected_variables)
+            self.status_bar.showMessage("Using JAX Autodiff optimizer")
+        else:
+            self.optimizer = InverseDesignerFiniteDiff(self.solver, self.config, initial_params=initial_params, selected_variables=selected_variables)
+            self.status_bar.showMessage("Using Finite Differences optimizer")
         
         # Start optimization timer
         self.optimization_running = True
@@ -235,7 +295,7 @@ class DifferentialBackpropagationApp(QMainWindow):
         
         self.optimization_timer = QTimer()
         self.optimization_timer.timeout.connect(self._run_optimization_step)
-        self.optimization_timer.start(100)  # Run every 100ms
+        self.optimization_timer.start(10)  # Run every 10ms
         
         self.status_bar.showMessage("Optimization started")
     
@@ -315,6 +375,36 @@ class DifferentialBackpropagationApp(QMainWindow):
                 target_cd=goals.target_cd
             )
             
+            # Update flow field and airfoil shape with real solver data
+            params = results['params']
+            print(f"DEBUG: Visualization update params: camber={params['camber']:.4f}, aoa={params['angle_of_attack']:.4f}")
+            
+            # Use real solver data
+            u = np.array(self.optimizer.solver.u)
+            v = np.array(self.optimizer.solver.v)
+            # Compute vorticity
+            dv_dx = (np.roll(v, -1, axis=0) - np.roll(v, 1, axis=0)) / (2 * self.optimizer.solver.grid.dx)
+            du_dy = (np.roll(u, -1, axis=1) - np.roll(u, 1, axis=1)) / (2 * self.optimizer.solver.grid.dy)
+            vort = dv_dx - du_dy
+            self.visualization.update_flow_field(u, v, vort)
+            
+            # Get NACA airfoil coordinates using correct function
+            from obstacles.naca_airfoils import generate_naca_4digit
+            x = np.linspace(0, 1, 100)
+            x_upper, y_upper, x_lower, y_lower = generate_naca_4digit(
+                x,
+                params['camber'],
+                params['camber_position'],
+                params['thickness']
+            )
+            # Apply angle of attack rotation (negative sign to match solver convention)
+            angle = -np.radians(params['angle_of_attack'])
+            x_upper_rot = x_upper * np.cos(angle) - y_upper * np.sin(angle)
+            y_upper_rot = x_upper * np.sin(angle) + y_upper * np.cos(angle)
+            x_lower_rot = x_lower * np.cos(angle) - y_lower * np.sin(angle)
+            y_lower_rot = x_lower * np.sin(angle) + y_lower * np.cos(angle)
+            self.visualization.update_airfoil_shape(x_upper_rot, y_upper_rot, x_lower_rot, y_lower_rot)
+            
             # Update progress bar
             progress = (results['iteration'] / self.config.max_iterations) * 100
             self.opt_control_panel.progress_bar.setValue(int(progress))
@@ -366,6 +456,19 @@ class DifferentialBackpropagationApp(QMainWindow):
         self.config.goals.cd_weight = goals['cd_weight']
         self.config.goals.strouhal_weight = goals['strouhal_weight']
         self.config.goals.shape_regularization = goals['shape_regularization']
+        
+        # Update target selection flags
+        self.config.goals.target_cl_enabled = self.goals_panel.cl_enabled.isChecked()
+        self.config.goals.target_cd_enabled = self.goals_panel.cd_enabled.isChecked()
+        self.config.goals.target_strouhal_enabled = self.goals_panel.strouhal_enabled.isChecked()
+        self.config.goals.target_aoa_enabled = self.goals_panel.aoa_enabled.isChecked()
+        
+        # Update variable selection flags
+        variables = self.variable_panel.get_selected_variables()
+        self.config.goals.optimize_aoa = variables['aoa']
+        self.config.goals.optimize_thickness = variables['thickness']
+        self.config.goals.optimize_camber_position = variables['camber_position']
+        self.config.goals.optimize_camber = variables['camber']
         
         # Update optimization settings
         opt_settings = self.opt_control_panel.get_optimization_settings()

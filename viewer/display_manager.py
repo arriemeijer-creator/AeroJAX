@@ -17,6 +17,14 @@ class DisplayManager:
         """Initialize CSV logging for metrics."""
         self.csv_log_interval = 10  # Log every 10 airfoil metric samples
         self.airfoil_metric_count = 0
+        
+        # Visualization profiling data storage
+        self.viz_profiling_data = {
+            'viz_total': 0.0,
+            'velocity': 0.0,
+            'vorticity': 0.0,
+            'pressure': 0.0
+        }
 
         # Get angle of attack from NACA airfoil parameters if available
         if hasattr(self.solver, 'sim_params') and hasattr(self.solver.sim_params, 'naca_angle'):
@@ -63,22 +71,34 @@ class DisplayManager:
                 print(f"P min: {p.min():.8f}, max: {p.max():.8f}, mean: {p.mean():.8f}")
 
                 if u is not None and v is not None:
-                    from solver.operators import divergence_nonperiodic, grad_x_nonperiodic, grad_y_nonperiodic, vorticity_nonperiodic
-                    div = divergence_nonperiodic(u, v, self.solver.grid.dx, self.solver.grid.dy)
-                    du_dx = grad_x_nonperiodic(u, self.solver.grid.dx)
-                    dv_dy = grad_y_nonperiodic(v, self.solver.grid.dy)
-                    dt = self.solver.sim_params.dt if hasattr(self.solver.sim_params, 'dt') else 0.01
+                    # Check grid type and use appropriate operators
+                    grid_type = getattr(self.solver.sim_params, 'grid_type', 'collocated')
+                    if grid_type == 'mac':
+                        from solver.operators_mac import divergence_nonperiodic_staggered, vorticity_nonperiodic_staggered
+                        div = divergence_nonperiodic_staggered(u, v, self.solver.grid.dx, self.solver.grid.dy)
+                        vort = vorticity_nonperiodic_staggered(u, v, self.solver.grid.dx, self.solver.grid.dy)
+                        # Skip du_dx and dv_dy for MAC grid diagnostics
+                        du_dx = None
+                        dv_dy = None
+                    else:
+                        from solver.operators import divergence_nonperiodic, grad_x_nonperiodic, grad_y_nonperiodic, vorticity_nonperiodic
+                        div = divergence_nonperiodic(u, v, self.solver.grid.dx, self.solver.grid.dy)
+                        du_dx = grad_x_nonperiodic(u, self.solver.grid.dx)
+                        dv_dy = grad_y_nonperiodic(v, self.solver.grid.dy)
+                        vort = vorticity_nonperiodic(u, v, self.solver.grid.dx, self.solver.grid.dy)
+                    
+                    dt = self.solver.dt
                     rhs = div / dt
                     print(f"Div min: {div.min():.8f}, max: {div.max():.8f}, mean: {div.mean():.8f}")
                     print(f"Div max abs: {np.max(np.abs(div)):.6f}")
                     print(f"u max: {u.max():.4f}, v max: {v.max():.4f}")
-                    print(f"du/dx max: {du_dx.max():.4f}, dv/dy max: {dv_dy.max():.4f}")
+                    if du_dx is not None and dv_dy is not None:
+                        print(f"du/dx max: {du_dx.max():.4f}, dv/dy max: {dv_dy.max():.4f}")
                     print(f"dt: {dt:.6f}")
 
                     # Compute circulation-based CL
                     if hasattr(self.solver, 'mask') and hasattr(self.solver.flow, 'U_inf'):
                         from solver.metrics import compute_CL_circulation
-                        vort = vorticity_nonperiodic(u, v, self.solver.grid.dx, self.solver.grid.dy)
                         mask = self.solver.mask
                         chord = getattr(self.solver.sim_params, 'naca_chord', 3.0)
                         cl_circ = float(compute_CL_circulation(vort, mask, self.solver.grid.dx, self.solver.grid.dy,
@@ -316,16 +336,28 @@ class DisplayManager:
     
     def refresh_display(self) -> None:
         """Update the display with latest simulation data."""
+        import time
+        t_start = time.time()
+        
         try:
             data = self.sim_controller.get_latest_data()
             if data is None:
                 # Don't try to access removed info_label
                 return
             
-            # Get visualization data
-            shared_buffers = data.get('shared_buffers', {})
-            velocity_buffer = shared_buffers.get('vel_mag')
-            vorticity_buffer = shared_buffers.get('vort')
+            t_get_data = time.time()
+            
+            # TEMPORARY: Get arrays directly instead of from shared buffers
+            vel_mag_data = data.get('vel_mag')
+            vort_data = data.get('vort')
+            div_data = data.get('div')
+            
+            # Get visualization data (commented out temporarily)
+            # shared_buffers = data.get('shared_buffers', {})
+            # velocity_buffer = shared_buffers.get('vel_mag')
+            # vorticity_buffer = shared_buffers.get('vort')
+            
+            t_get_buffers = time.time()
             
             # Data is available - proceed with visualization update
             
@@ -334,27 +366,56 @@ class DisplayManager:
                 # Get pressure data from solver
                 pressure_data = self.solver.current_pressure if hasattr(self.solver, 'current_pressure') else None
 
+                t_update_viz = time.time()
                 self.flow_viz.update_visualization(
-                    velocity_buffer.array if velocity_buffer else None,
-                    vorticity_buffer.array if vorticity_buffer else None,
+                    vel_mag_data if vel_mag_data is not None else None,
+                    vort_data if vort_data is not None else None,
                     pressure_data,
+                    div_data if div_data is not None else None,
                     self.config.viz_config.show_velocity,
                     self.config.viz_config.show_vorticity,
-                    True  # show_pressure
+                    self.config.viz_config.show_pressure,
+                    self.config.viz_config.show_dye
                 )
+                t_after_viz = time.time()
+            except Exception as viz_error:
+                import traceback
+                print(f"Warning: Visualization update failed: {viz_error}")
+                traceback.print_exc()
+                # Continue running even if visualization fails
                 
-                # Update scalar visualization
-                if hasattr(self.solver, 'c'):
+                # Update scalar visualization (dye)
+                t_dye_start = time.time()
+                if self.config.viz_config.show_dye and hasattr(self.solver, 'c'):
                     # Continuous dye injection while button is held
                     if self.inject_dye_pressed:
                         self.inject_dye_at_slider_position()
 
-                    scalar_data = np.array(self.solver.c)  # No transpose - use same orientation as velocity
-                    # Add rect parameter to map grid coordinates to physical coordinates
-                    rect = (0, 0, self.solver.grid.lx, self.solver.grid.ly)
-                    self.flow_viz.scalar_img.setImage(scalar_data, levels=[0, 1], autoLevels=False, rect=rect)
+                    if self.flow_viz.use_particles:
+                        # Update particles with velocity field
+                        # Update multiple times to match simulation speed (frame skip)
+                        frame_skip = self.sim_controller.update_every if hasattr(self.sim_controller, 'update_every') else 1
+                        u_np = np.array(self.solver.u)
+                        v_np = np.array(self.solver.v)
+                        X_np = np.array(self.solver.grid.X)
+                        Y_np = np.array(self.solver.grid.Y)
+                        domain_bounds = (0, self.solver.grid.lx, 0, self.solver.grid.ly)
+                        
+                        # Update particles multiple times to match simulation steps
+                        for _ in range(frame_skip):
+                            self.flow_viz.update_particles(u_np, v_np, X_np, Y_np, 
+                                                         self.solver.grid.dx, self.solver.grid.dy, 
+                                                         self.solver.dt, domain_bounds)
+                    else:
+                        # Update dye field
+                        scalar_data = np.array(self.solver.c)  # No transpose - use same orientation as velocity
+                        # Add rect parameter to map grid coordinates to physical coordinates
+                        rect = (0, 0, self.solver.grid.lx, self.solver.grid.ly)
+                        self.flow_viz.scalar_img.setImage(scalar_data, levels=[0, 1], autoLevels=False, rect=rect)
+                t_dye_end = time.time()
                 
                 # Update L2 change plot (formerly L2 error)
+                t_l2_start = time.time()
                 if hasattr(self.solver, 'history') and 'l2_change' in self.solver.history:
                     l2_changes = self.solver.history['l2_change']
                     rms_changes = self.solver.history.get('rms_change', [])
@@ -480,34 +541,52 @@ class DisplayManager:
                             cylinder_diameter=cylinder_diameter,
                             cylinder_center_x=cylinder_center_x
                         )
+                t_l2_end = time.time()
                         
             except Exception as viz_error:
                 print(f"Warning: Visualization update failed: {viz_error}")
                 # Continue running even if visualization fails
                 
             # Update obstacle outlines periodically
+            t_outline_start = time.time()
             try:
                 if hasattr(self, 'obstacle_renderer') and self.obstacle_renderer:
                     self.obstacle_renderer.update_obstacle_outlines(self.solver)
             except Exception as outline_error:
                 print(f"Warning: Outline update failed: {outline_error}")
                 # Continue running even if outline update fails
+            t_outline_end = time.time()
+                
+        except Exception as viz_error:
+            print(f"Warning: Visualization update failed: {viz_error}")
+            # Continue running even if visualization fails
                 
         except Exception as refresh_error:
             print(f"Warning: Display refresh failed: {refresh_error}")
             # Don't crash the application, just continue
         
         # Update overlays with error handling
+        t_overlay_start = time.time()
         try:
             if self.obstacle_renderer is not None:
                 self.obstacle_renderer.update_obstacle_outlines(self.solver)
         except Exception as outline_error:
             print(f"Warning: Overlay outline update failed: {outline_error}")
+        t_overlay_end = time.time()
             
+        t_sdf_start = time.time()
         try:
             self.sdf_viz.update_sdf_visualization(self.solver)
         except Exception as sdf_error:
             print(f"Warning: SDF visualization update failed: {sdf_error}")
+        t_sdf_end = time.time()
+        
+        t_total = time.time() - t_start
+        
+        # Print profiling every 60 frames
+        if not hasattr(self, '_viz_frame_count'):
+            self._viz_frame_count = 0
+        self._viz_frame_count += 1
 
         # Update status information
         # Use control_panel labels if available
@@ -587,7 +666,7 @@ class DisplayManager:
 
             # Get mask epsilon from solver (actual value used)
             actual_epsilon = getattr(self.solver.sim_params, 'eps', 0.01)
-            self.info_panel.mask_epsilon_label.setText(f"Mask ε: {actual_epsilon:.4f}")
+            self.info_panel.mask_epsilon_label.setText(f"Mask ε: {actual_epsilon:.2e}")
 
             # Get LES status from control panel
             if hasattr(self.control_panel, 'les_checkbox'):
@@ -671,14 +750,24 @@ class DisplayManager:
         if hasattr(self, 'info_panel') and self.info_panel is not None:
             self.info_panel.sim_fps_label.setText(f"Sim FPS: {fps}")
     
+    def handle_profiling_update(self, solver_ms: float, interp_ms: float, total_ms: float, sim_fps: float) -> None:
+        """Handle profiling data update and update overlay."""
+        # Get visualization timing data if available
+        viz_data = None
+        if hasattr(self.flow_viz, '_latest_viz_timing'):
+            viz_data = self.flow_viz._latest_viz_timing
+        
+        self.flow_viz.update_profiling_overlay(solver_ms, interp_ms, total_ms, sim_fps, viz_data)
+    
+    def toggle_profiling_overlay(self, state: int) -> None:
+        """Toggle profiling overlay visibility."""
+        visible = (state == 2)  # Qt.CheckState.Checked
+        self.flow_viz.set_profiling_visible(visible)
+    
     def handle_metrics_data(self, metrics_data: Dict[str, Any]) -> None:
         """Process metrics data from the separate metrics thread."""
-        # Debug: print to verify function is called
-        print("DEBUG: handle_metrics_data called")
-        
         error_metrics = metrics_data.get('error_metrics')
         airfoil_metrics = metrics_data.get('airfoil_metrics')
-        print(f"DEBUG: airfoil_metrics = {airfoil_metrics is not None}")
 
         # Initialize CSV logging on first call
         if not hasattr(self, 'csv_file_path'):
@@ -711,6 +800,62 @@ class DisplayManager:
             self.solver.history['airfoil_metrics']['separation_x'].append(airfoil_metrics['separation_x'])
             self.solver.history['airfoil_metrics']['Cp_min'].append(airfoil_metrics['Cp_min'])
             self.solver.history['airfoil_metrics']['wake_deficit'].append(airfoil_metrics['wake_deficit'])
+            if 'strouhal' in airfoil_metrics:
+                self.solver.history['airfoil_metrics']['strouhal'].append(airfoil_metrics['strouhal'])
+            else:
+                # Ensure strouhal list exists and append 0.0 if not provided
+                if 'strouhal' not in self.solver.history['airfoil_metrics']:
+                    self.solver.history['airfoil_metrics']['strouhal'] = []
+                self.solver.history['airfoil_metrics']['strouhal'].append(0.0)
+
+            # Update UI with airfoil metrics
+            if hasattr(self, 'info_panel') and self.info_panel is not None:
+                chord_length = getattr(self.solver.sim_params, 'naca_chord', 2.0)
+                airfoil_x = getattr(self.solver.sim_params, 'naca_x', 2.5)
+                obstacle_type = getattr(self.solver.sim_params, 'obstacle_type', 'naca_airfoil')
+                cylinder_diameter = float(2.0 * self.solver.geom.radius) if hasattr(self.solver.geom, 'radius') else 0.36
+                cylinder_center_x = float(self.solver.geom.center_x) if hasattr(self.solver.geom, 'center_x') else 5.0
+
+                self.info_panel.update_airfoil_metrics(
+                    cl=airfoil_metrics['CL'],
+                    cd=airfoil_metrics['CD'],
+                    stagnation=airfoil_metrics['stagnation_x'],
+                    separation=airfoil_metrics['separation_x'],
+                    cp_min=airfoil_metrics['Cp_min'],
+                    wake_deficit=airfoil_metrics['wake_deficit'],
+                    strouhal=airfoil_metrics.get('strouhal', 0.0),
+                    airfoil_x=airfoil_x,
+                    chord_length=chord_length,
+                    obstacle_type=obstacle_type,
+                    cylinder_diameter=cylinder_diameter,
+                    cylinder_center_x=cylinder_center_x
+                )
+
+        # Update UI with error metrics
+        if error_metrics and hasattr(self, 'info_panel') and self.info_panel is not None:
+            self.info_panel.update_error_metrics(
+                l2_error=error_metrics['l2_change'],
+                rms_change=error_metrics['rms_change'],
+                max_error=error_metrics['max_change'],
+                change_99p=error_metrics['change_99p'],
+                rel_error=error_metrics['rel_change'],
+                l2_u_error=error_metrics['l2_change_u'],
+                l2_v_error=error_metrics['l2_change_v']
+            )
+
+            # Update error metrics plot
+            if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+                current_time = self.solver.history['time'][-1] if self.solver.history.get('time') else 0.0
+                self.flow_viz.update_l2_error(
+                    error_metrics['l2_change'],
+                    current_time,
+                    error_metrics['max_change'],
+                    error_metrics['rel_change'],
+                    error_metrics['l2_change_u'],
+                    error_metrics['l2_change_v'],
+                    error_metrics['rms_change'],
+                    error_metrics['change_99p']
+                )
     
     def handle_simulation_data(self, data: Dict[str, Any]) -> None:
         """Process new data from the simulation engine."""

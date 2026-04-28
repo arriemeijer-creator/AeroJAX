@@ -176,6 +176,7 @@ class InfoPanel(QWidget):
         error_layout.addLayout(copy_row)
 
         error_group.setLayout(error_layout)
+        self.error_metrics_group = error_group  # Expose for right panel
 
         # ========== AIRFOIL METRICS ==========
         airfoil_group = CollapsibleGroupBox("Airfoil Metrics", start_collapsed=True)
@@ -225,8 +226,11 @@ class InfoPanel(QWidget):
         airfoil_layout.addLayout(metrics_toggle_row)
 
         airfoil_group.setLayout(airfoil_layout)
+        self.airfoil_metrics_group = airfoil_group  # Expose for right panel
 
-        # ========== SCROLLABLE AREA FOR METRICS ==========
+        # ========== SCROLLABLE AREA FOR BASIC INFO ==========
+        # Note: Error Metrics and Airfoil Metrics are now in RightControlPanel
+        # This panel now only shows basic solver info
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -238,11 +242,23 @@ class InfoPanel(QWidget):
         scroll_layout.setSpacing(15)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Add error metrics group
-        scroll_layout.addWidget(error_group)
+        # Add basic info labels
+        info_group = CollapsibleGroupBox("Solver Info", start_collapsed=False)
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(4)
 
-        # Add airfoil metrics group
-        scroll_layout.addWidget(airfoil_group)
+        for label in [self.solver_label, self.info_label, self.div_label, self.sim_fps_label,
+                      self.grid_size_label, self.reynolds_label, self.hyper_viscosity_label,
+                      self.mask_epsilon_label, self.dt_mode_label, self.dt_value_label,
+                      self.les_status_label, self.les_model_label, self.advection_scheme_label]:
+            row = QHBoxLayout()
+            row.addWidget(label)
+            row.addStretch()
+            info_layout.addLayout(row)
+
+        info_group.setLayout(info_layout)
+        scroll_layout.addWidget(info_group)
+        self.solver_info_group = info_group  # Expose for right panel
 
         scroll_layout.addStretch()
 

@@ -27,13 +27,13 @@ class GoalSettingPanel(QWidget):
         goals_layout = QFormLayout()
         
         # Cl goal
-        self.cl_enabled = QCheckBox("Enable Cl Goal")
-        self.cl_enabled.setChecked(False)
+        self.cl_enabled = QCheckBox("Cl")
+        self.cl_enabled.setChecked(True)
         self.cl_value = QDoubleSpinBox()
-        self.cl_value.setRange(-5.0, 5.0)
+        self.cl_value.setRange(-2.0, 2.0)
         self.cl_value.setSingleStep(0.1)
-        self.cl_value.setValue(0.5)
-        self.cl_value.setEnabled(False)
+        self.cl_value.setValue(0.8)
+        self.cl_value.setEnabled(True)
         self.cl_enabled.toggled.connect(self.cl_value.setEnabled)
         
         cl_layout = QHBoxLayout()
@@ -43,13 +43,13 @@ class GoalSettingPanel(QWidget):
         goals_layout.addRow(cl_layout)
         
         # Cd goal
-        self.cd_enabled = QCheckBox("Enable Cd Goal")
-        self.cd_enabled.setChecked(False)
+        self.cd_enabled = QCheckBox("Cd")
+        self.cd_enabled.setChecked(True)
         self.cd_value = QDoubleSpinBox()
         self.cd_value.setRange(0.0, 1.0)
         self.cd_value.setSingleStep(0.01)
-        self.cd_value.setValue(0.02)
-        self.cd_value.setEnabled(False)
+        self.cd_value.setValue(0.05)
+        self.cd_value.setEnabled(True)
         self.cd_enabled.toggled.connect(self.cd_value.setEnabled)
         
         cd_layout = QHBoxLayout()
@@ -59,7 +59,7 @@ class GoalSettingPanel(QWidget):
         goals_layout.addRow(cd_layout)
         
         # Strouhal goal
-        self.strouhal_enabled = QCheckBox("Enable Strouhal Goal")
+        self.strouhal_enabled = QCheckBox("Strouhal")
         self.strouhal_enabled.setChecked(False)
         self.strouhal_value = QDoubleSpinBox()
         self.strouhal_value.setRange(0.0, 1.0)
@@ -75,7 +75,7 @@ class GoalSettingPanel(QWidget):
         goals_layout.addRow(strouhal_layout)
         
         # AoA goal
-        self.aoa_enabled = QCheckBox("Enable AoA Goal")
+        self.aoa_enabled = QCheckBox("AoA")
         self.aoa_enabled.setChecked(False)
         self.aoa_value = QDoubleSpinBox()
         self.aoa_value.setRange(-15.0, 15.0)
@@ -245,6 +245,71 @@ class AirfoilSelectionPanel(QWidget):
         }
 
 
+class VariableSelectionPanel(QWidget):
+    """Panel for selecting which variables to optimize (max 2)"""
+    
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Variable selection group
+        var_group = QGroupBox("Variables to Optimize (max 2)")
+        var_layout = QVBoxLayout()
+        
+        # Variable checkboxes
+        self.aoa_var = QCheckBox("Angle of Attack (AoA)")
+        self.aoa_var.setChecked(True)
+        
+        self.thickness_var = QCheckBox("Thickness")
+        self.thickness_var.setChecked(True)
+        
+        self.camber_pos_var = QCheckBox("Camber Position")
+        self.camber_pos_var.setChecked(False)
+        
+        self.camber_var = QCheckBox("Camber")
+        self.camber_var.setChecked(False)
+        
+        # Connect to enforce max 2 selection
+        self.aoa_var.stateChanged.connect(self._enforce_max_2)
+        self.thickness_var.stateChanged.connect(self._enforce_max_2)
+        self.camber_pos_var.stateChanged.connect(self._enforce_max_2)
+        self.camber_var.stateChanged.connect(self._enforce_max_2)
+        
+        var_layout.addWidget(self.aoa_var)
+        var_layout.addWidget(self.thickness_var)
+        var_layout.addWidget(self.camber_pos_var)
+        var_layout.addWidget(self.camber_var)
+        
+        var_group.setLayout(var_layout)
+        layout.addWidget(var_group)
+        
+        layout.addStretch()
+        self.setLayout(layout)
+    
+    def _enforce_max_2(self):
+        """Enforce maximum 2 variable selection"""
+        checkboxes = [self.aoa_var, self.thickness_var, self.camber_pos_var, self.camber_var]
+        checked = [cb for cb in checkboxes if cb.isChecked()]
+        
+        if len(checked) > 2:
+            # Uncheck the most recently checked box (the sender)
+            sender = self.sender()
+            sender.setChecked(False)
+    
+    def get_selected_variables(self) -> Dict[str, bool]:
+        """Get selected variables"""
+        return {
+            'aoa': self.aoa_var.isChecked(),
+            'thickness': self.thickness_var.isChecked(),
+            'camber_position': self.camber_pos_var.isChecked(),
+            'camber': self.camber_var.isChecked()
+        }
+
+
 class GridConfigPanel(QWidget):
     """Panel for grid configuration"""
     
@@ -347,6 +412,19 @@ class OptimizationControlPanel(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout()
         
+        # Optimizer selection
+        optimizer_group = QGroupBox("Optimizer Method")
+        optimizer_layout = QFormLayout()
+        
+        self.optimizer_combo = QComboBox()
+        self.optimizer_combo.addItem("JAX Autodiff", "autodiff")
+        self.optimizer_combo.addItem("Finite Differences", "finite_diff")
+        self.optimizer_combo.setCurrentIndex(0)  # Default to autodiff
+        optimizer_layout.addRow("Method:", self.optimizer_combo)
+        
+        optimizer_group.setLayout(optimizer_layout)
+        layout.addWidget(optimizer_group)
+        
         # Optimization settings
         opt_group = QGroupBox("Optimization Settings")
         opt_layout = QFormLayout()
@@ -410,6 +488,7 @@ class OptimizationControlPanel(QWidget):
     def get_optimization_settings(self) -> Dict[str, Any]:
         """Get current optimization settings"""
         return {
+            'optimizer_method': self.optimizer_combo.currentData(),
             'max_iterations': self.max_iter_spin.value(),
             'learning_rate': self.lr_spin.value(),
             'convergence_threshold': self.conv_thresh_spin.value()

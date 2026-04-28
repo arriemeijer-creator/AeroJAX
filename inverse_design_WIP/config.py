@@ -45,6 +45,18 @@ class OptimizationGoals:
     cd_weight: float = 1.0
     strouhal_weight: float = 1.0
     shape_regularization: float = 0.1
+    
+    # Target selection flags
+    target_cl_enabled: bool = True
+    target_cd_enabled: bool = True
+    target_strouhal_enabled: bool = False
+    target_aoa_enabled: bool = False
+    
+    # Variable selection flags (which variables to optimize)
+    optimize_aoa: bool = True
+    optimize_thickness: bool = True
+    optimize_camber_position: bool = False
+    optimize_camber: bool = False
 
 
 @dataclass

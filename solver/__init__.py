@@ -37,7 +37,7 @@ from .brinkman import (
     apply_brinkman_penalization_consistent
 )
 from .metrics import (
-    compute_forces, get_airfoil_surface_mask,
+    get_airfoil_surface_mask,
     find_stagnation_point, find_separation_point
 )
 from .solver import BaselineSolver, update_dt_pure, step_pure
@@ -70,7 +70,7 @@ __all__ = [
     'apply_brinkman_penalization_mild',
     'apply_brinkman_penalization_consistent',
     # Metrics
-    'compute_forces', 'get_airfoil_surface_mask',
+    'get_airfoil_surface_mask',
     'find_stagnation_point', 'find_separation_point',
     # Solver
     'BaselineSolver', 'update_dt_pure', 'step_pure',
