@@ -21,9 +21,19 @@ class VisualizationControls(CollapsibleGroupBox):
 
     def setup_ui(self):
         """Setup visualization controls"""
+        import warnings
+        # Suppress QGridLayoutEngine warnings
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*QGridLayoutEngine.*')
+        
         layout = QGridLayout()
         layout.setSpacing(5)
-        layout.setColumnStretch(2, 1)  # Stretch last column
+        # Configure column stretches for all used columns (0-5)
+        layout.setColumnStretch(0, 0)  # Fixed width for labels
+        layout.setColumnStretch(1, 0)  # Fixed width for controls
+        layout.setColumnStretch(2, 0)  # Fixed width for buttons
+        layout.setColumnStretch(3, 0)  # Fixed width for additional buttons
+        layout.setColumnStretch(4, 0)  # Fixed width for additional buttons
+        layout.setColumnStretch(5, 1)  # Stretch last column
 
         # Row 0: Frame skip
         layout.addWidget(QLabel("Frame skip:"), 0, 0)
@@ -64,7 +74,7 @@ class VisualizationControls(CollapsibleGroupBox):
         self.show_vorticity_checkbox = QCheckBox("Vorticity")
         self.show_vorticity_checkbox.setChecked(True)
         self.show_pressure_checkbox = QCheckBox("Pressure")
-        self.show_pressure_checkbox.setChecked(True)
+        self.show_pressure_checkbox.setChecked(False)
         self.show_dye_checkbox = QCheckBox("Dye")
         self.show_dye_checkbox.setChecked(True)
         self.particle_mode_checkbox = QCheckBox("Particles")

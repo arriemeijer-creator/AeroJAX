@@ -104,6 +104,9 @@ def rk3_step_mac(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
             v_field = v_field.at[:, -1].set(0.0)  # Top wall
             v_field = v_field.at[0, :].set(0.0)  # Left wall
             v_field = v_field.at[-1, :].set(0.0)  # Right wall
+        elif flow_type == 'taylor_green':
+            # Taylor-Green: Periodic - no boundary conditions needed
+            pass
         else:
             # von_karman: Inlet at left, outlet at right
             # Inlet (left)
@@ -298,6 +301,9 @@ def rk_step_unified_mac(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
             v_field = v_field.at[:, -1].set(0.0)  # Top wall
             v_field = v_field.at[0, :].set(0.0)  # Left wall
             v_field = v_field.at[-1, :].set(0.0)  # Right wall
+        elif flow_type == 'taylor_green':
+            # Taylor-Green: Periodic - no boundary conditions needed
+            pass
         else:
             # von_karman: Inlet at left, outlet at right
             # Inlet (left) - u at x=0 face, v at x=0 cell

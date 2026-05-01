@@ -13,16 +13,20 @@ def rk3_step_simple_new(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
     
     nx, ny = u.shape
     
+    # Determine padding mode based on flow type
+    # Taylor-Green uses periodic boundaries, others use non-periodic
+    pad_mode = 'wrap' if flow_type == 'taylor_green' else 'edge'
+    
     def grad_x(f):
-        f_padded = jnp.pad(f, ((1, 1), (0, 0)), mode='edge')
+        f_padded = jnp.pad(f, ((1, 1), (0, 0)), mode=pad_mode)
         return (f_padded[2:, :] - f_padded[:-2, :]) / (2.0 * dx)
 
     def grad_y(f):
-        f_padded = jnp.pad(f, ((0, 0), (1, 1)), mode='edge')
+        f_padded = jnp.pad(f, ((0, 0), (1, 1)), mode=pad_mode)
         return (f_padded[:, 2:] - f_padded[:, :-2]) / (2.0 * dy)
 
     def laplacian(f):
-        f_padded = jnp.pad(f, ((1, 1), (1, 1)), mode='edge')
+        f_padded = jnp.pad(f, ((1, 1), (1, 1)), mode=pad_mode)
         lap_x = (f_padded[2:, 1:-1] + f_padded[:-2, 1:-1] - 2*f) / dx**2
         lap_y = (f_padded[1:-1, 2:] + f_padded[1:-1, :-2] - 2*f) / dy**2
         return lap_x + lap_y
@@ -67,6 +71,9 @@ def rk3_step_simple_new(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
             v_field = v_field.at[:, -1].set(0.0)  # Top wall
             v_field = v_field.at[0, :].set(0.0)  # Left wall
             v_field = v_field.at[-1, :].set(0.0)  # Right wall
+        elif flow_type == 'taylor_green':
+            # Taylor-Green: Periodic - no boundary conditions needed
+            pass
         else:
             # von_karman: Inlet at left, outlet at right
             u_field = u_field.at[0, :].set(U_inf)
@@ -94,13 +101,13 @@ def rk3_step_simple_new(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
     def compute_rhs(u_in, v_in):
         # Use upwind scheme to eliminate Gibbs oscillations
         def upwind_advection(field, vel_u, vel_v):
-            # X-direction upwind with non-periodic boundaries
-            f_padded = jnp.pad(field, ((1, 1), (0, 0)), mode='edge')
+            # X-direction upwind with periodic or non-periodic boundaries
+            f_padded = jnp.pad(field, ((1, 1), (0, 0)), mode=pad_mode)
             f_x = jnp.where(vel_u > 0,
                             vel_u * (field - f_padded[:-2, :]) / dx,
                             vel_u * (f_padded[2:, :] - field) / dx)
-            # Y-direction upwind with non-periodic boundaries
-            f_padded_y = jnp.pad(field, ((0, 0), (1, 1)), mode='edge')
+            # Y-direction upwind with periodic or non-periodic boundaries
+            f_padded_y = jnp.pad(field, ((0, 0), (1, 1)), mode=pad_mode)
             f_y = jnp.where(vel_v > 0,
                             vel_v * (field - f_padded_y[:, :-2]) / dy,
                             vel_v * (f_padded_y[:, 2:] - field) / dy)
@@ -193,16 +200,20 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
         chi = 1.0 - mask   # 1 inside solid, 0 outside (fallback)
     eta = brinkman_eta
     
+    # Determine padding mode based on flow type
+    # Taylor-Green uses periodic boundaries, others use non-periodic
+    pad_mode = 'wrap' if flow_type == 'taylor_green' else 'edge'
+    
     def grad_x(f):
-        f_padded = jnp.pad(f, ((1, 1), (0, 0)), mode='edge')
+        f_padded = jnp.pad(f, ((1, 1), (0, 0)), mode=pad_mode)
         return (f_padded[2:, :] - f_padded[:-2, :]) / (2.0 * dx)
 
     def grad_y(f):
-        f_padded = jnp.pad(f, ((0, 0), (1, 1)), mode='edge')
+        f_padded = jnp.pad(f, ((0, 0), (1, 1)), mode=pad_mode)
         return (f_padded[:, 2:] - f_padded[:, :-2]) / (2.0 * dy)
 
     def laplacian(f):
-        f_padded = jnp.pad(f, ((1, 1), (1, 1)), mode='edge')
+        f_padded = jnp.pad(f, ((1, 1), (1, 1)), mode=pad_mode)
         lap_x = (f_padded[2:, 1:-1] + f_padded[:-2, 1:-1] - 2*f) / dx**2
         lap_y = (f_padded[1:-1, 2:] + f_padded[1:-1, :-2] - 2*f) / dy**2
         return lap_x + lap_y
@@ -247,6 +258,9 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
             v_field = v_field.at[:, -1].set(0.0)  # Top wall
             v_field = v_field.at[0, :].set(0.0)  # Left wall
             v_field = v_field.at[-1, :].set(0.0)  # Right wall
+        elif flow_type == 'taylor_green':
+            # Taylor-Green: Periodic - no boundary conditions needed
+            pass
         else:
             # von_karman: Inlet at left, outlet at right
             u_field = u_field.at[0, :].set(U_inf)
@@ -271,13 +285,13 @@ def rk_step_unified(u: jnp.ndarray, v: jnp.ndarray, dt: float, nu: float,
         # Advection and diffusion only (no penalization in explicit part)
         # Use upwind scheme to eliminate Gibbs oscillations
         def upwind_advection(field, vel_u, vel_v):
-            # X-direction upwind with non-periodic boundaries
-            f_padded = jnp.pad(field, ((1, 1), (0, 0)), mode='edge')
+            # X-direction upwind with periodic or non-periodic boundaries
+            f_padded = jnp.pad(field, ((1, 1), (0, 0)), mode=pad_mode)
             f_x = jnp.where(vel_u > 0,
                             vel_u * (field - f_padded[:-2, :]) / dx,
                             vel_u * (f_padded[2:, :] - field) / dx)
-            # Y-direction upwind with non-periodic boundaries
-            f_padded_y = jnp.pad(field, ((0, 0), (1, 1)), mode='edge')
+            # Y-direction upwind with periodic or non-periodic boundaries
+            f_padded_y = jnp.pad(field, ((0, 0), (1, 1)), mode=pad_mode)
             f_y = jnp.where(vel_v > 0,
                             vel_v * (field - f_padded_y[:, :-2]) / dy,
                             vel_v * (f_padded_y[:, 2:] - field) / dy)

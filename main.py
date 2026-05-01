@@ -6,16 +6,49 @@ A modular, maintainable fluid dynamics visualization tool
 
 import sys
 import time
+import warnings
+import os
+import logging
 from typing import Optional, Dict, Any
 import numpy as np
 import jax.numpy as jnp
 import jax
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, 
-    QMenuBar, QDockWidget, QHBoxLayout, QSizePolicy, QSplitter
+    QMenuBar, QDockWidget, QHBoxLayout, QSizePolicy, QSplitter, QMessageBox
 )
 from PyQt6.QtCore import QTimer, Qt
 import pyqtgraph as pg
+
+# Suppress Qt layout warnings that don't affect functionality
+warnings.filterwarnings('ignore', message='.*QGridLayoutEngine.*')
+warnings.filterwarnings('ignore', message='.*overflow encountered in cast.*')
+
+# Suppress Qt debug output by redirecting stderr
+class QtWarningFilter:
+    def __init__(self):
+        self.stderr = sys.stderr
+        
+    def write(self, text):
+        if 'QGridLayoutEngine' in text or 'overflow encountered in cast' in text:
+            return  # Suppress these warnings
+        self.stderr.write(text)
+        
+    def flush(self):
+        self.stderr.flush()
+
+sys.stderr = QtWarningFilter()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('aerojax.log', mode='w')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Application modules
 from viewer.ui_components import ControlPanel, InfoPanel, FloatingControlBar, RightControlPanel
@@ -33,6 +66,15 @@ from solver import (
     GridParams, FlowParams, FlowConstraints, GeometryParams, SimulationParams, 
     CavityGeometryParams, BaselineSolver
 )
+
+# Trace viewer import
+try:
+    from trace_viewer import TraceViewerWindow, SnapshotRecorder
+    TRACE_VIEWER_AVAILABLE = True
+except ImportError:
+    TRACE_VIEWER_AVAILABLE = False
+    SnapshotRecorder = None
+    print("Warning: Trace viewer not available. Install required dependencies to enable.")
 
 # Optional modules - NACA airfoils
 # Inverse design GUI integration not available
@@ -64,6 +106,17 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # Initialize state
         self.is_paused = False
         self.is_dark_theme = False  # Start with light theme
+        
+        # Initialize snapshot recorder
+        self.snapshot_recorder = None
+        self.snapshot_recording_enabled = False
+        self.snapshot_save_interval = 10
+        self.snapshot_output_dir = "snapshots"
+        if TRACE_VIEWER_AVAILABLE:
+            self.snapshot_recorder = SnapshotRecorder(
+                output_dir=self.snapshot_output_dir,
+                save_interval=self.snapshot_save_interval
+            )
         
         # Initialize all components
         self._initialize_components()
@@ -142,6 +195,14 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
     
     def _initialize_components(self) -> None:
         """Create all modular components that make up the application."""
+        # Initialize validation flags (before any validation code runs)
+        self.ldc_enabled = False
+        self.vk_enabled = False
+        self.ldc_validator = None
+        self.ldc_overlay = None
+        self.vk_validator = None
+        self.vk_overlay = None
+        
         # User interface panels
         self.control_panel = ControlPanel(parent=self)
         self.info_panel = InfoPanel(self)
@@ -165,10 +226,11 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         
         # Visual overlays - restore obstacle renderer with error handling
         try:
-            if hasattr(self.flow_viz, 'vel_outline') and hasattr(self.flow_viz, 'vort_outline') and hasattr(self.flow_viz, 'scalar_outline') and hasattr(self.flow_viz, 'pressure_outline'):
-                if self.flow_viz.vel_outline is not None and self.flow_viz.vort_outline is not None and self.flow_viz.scalar_outline is not None and self.flow_viz.pressure_outline is not None:
+            if hasattr(self.flow_viz, 'vel_outline') and hasattr(self.flow_viz, 'div_outline') and hasattr(self.flow_viz, 'vort_outline') and hasattr(self.flow_viz, 'scalar_outline') and hasattr(self.flow_viz, 'pressure_outline'):
+                if self.flow_viz.vel_outline is not None and self.flow_viz.div_outline is not None and self.flow_viz.vort_outline is not None and self.flow_viz.scalar_outline is not None and self.flow_viz.pressure_outline is not None:
                     self.obstacle_renderer = ObstacleRenderer(
                         self.flow_viz.vel_outline,
+                        self.flow_viz.div_outline,
                         self.flow_viz.vort_outline,
                         self.flow_viz.scalar_outline,
                         self.flow_viz.pressure_outline
@@ -287,6 +349,16 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         self.floating_control_bar.start_btn.clicked.connect(self.start_simulation)
         self.floating_control_bar.pause_btn.clicked.connect(self.pause_simulation)
         self.floating_control_bar.reset_btn.clicked.connect(self.reset_simulation)
+        if TRACE_VIEWER_AVAILABLE:
+            self.floating_control_bar.trace_viewer_btn.clicked.connect(self.open_trace_viewer)
+            self.floating_control_bar.record_snapshots_cb.stateChanged.connect(self.on_snapshot_recording_toggled)
+            self.floating_control_bar.snapshot_interval_spin.valueChanged.connect(self.on_snapshot_interval_changed)
+            self.floating_control_bar.snapshot_dir_btn.clicked.connect(self.select_snapshot_directory)
+        else:
+            self.floating_control_bar.trace_viewer_btn.setEnabled(False)
+            self.floating_control_bar.trace_viewer_btn.setToolTip("Trace viewer not available")
+            self.floating_control_bar.record_snapshots_cb.setEnabled(False)
+            self.floating_control_bar.snapshot_dir_btn.setEnabled(False)
         self.floating_control_bar.velocity_colormap_combo.currentTextChanged.connect(self.change_velocity_colormap)
         self.floating_control_bar.vorticity_colormap_combo.currentTextChanged.connect(self.change_vorticity_colormap)
         self.floating_control_bar.pressure_colormap_combo.currentTextChanged.connect(self.change_pressure_colormap)
@@ -405,6 +477,18 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 self.control_panel.visualization_controls.show_profiling_checkbox.stateChanged.connect(
                     lambda state: self.floating_control_bar.profiling_overlay_cb.setChecked(state == 2)
                 )
+
+        # Floating control bar VK overlay toggle
+        if hasattr(self.floating_control_bar, 'vk_overlay_cb'):
+            self.floating_control_bar.vk_overlay_cb.stateChanged.connect(self.toggle_vk_overlay)
+
+        # VK x-range sliders
+        if hasattr(self.floating_control_bar, 'vk_x_min_slider'):
+            self.floating_control_bar.vk_x_min_slider.valueChanged.connect(self.update_vk_x_range)
+        if hasattr(self.floating_control_bar, 'vk_x_max_slider'):
+            self.floating_control_bar.vk_x_max_slider.valueChanged.connect(self.update_vk_x_range)
+        if hasattr(self.floating_control_bar, 'vk_max_vortices_slider'):
+            self.floating_control_bar.vk_max_vortices_slider.valueChanged.connect(self.update_vk_x_range)
         
         # Neural operator training controls
         if hasattr(self.control_panel, 'neural_operator_training'):
@@ -474,6 +558,12 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
     
     def _load_initial_state(self) -> None:
         """Load the initial simulation state and configure UI."""
+        print("DEBUG: _load_initial_state called")
+        print(f"DEBUG: Has sim_params: {hasattr(self.solver, 'sim_params')}")
+        if hasattr(self.solver, 'sim_params'):
+            print(f"DEBUG: Has flow_type: {hasattr(self.solver.sim_params, 'flow_type')}")
+            if hasattr(self.solver.sim_params, 'flow_type'):
+                print(f"DEBUG: flow_type = {self.solver.sim_params.flow_type}")
         # Create obstacle renderer if it wasn't created during initialization
         if self.obstacle_renderer is None:
             try:
@@ -502,6 +592,17 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
                 print(f"Warning: Failed to update initial obstacle outlines: {e}")
         
         # Populate UI controls with current solver values
+        
+        # Initialize validation overlays based on current flow type
+        if hasattr(self.solver.sim_params, 'flow_type'):
+            flow_type = self.solver.sim_params.flow_type
+            print(f"DEBUG: Initial flow type = {flow_type}")
+            # VK tracking is now disabled by default - user must enable via checkbox
+            if flow_type == "von_karman":
+                print("DEBUG: VK vortex tracking available (disabled by default)")
+            elif flow_type == "lid_driven_cavity":
+                # LDC validation is enabled when Re radio button is selected
+                pass
         self.control_panel.re_input.setValue(int(self.solver.flow.Re))
         if hasattr(self.control_panel, 'u_input'):
             self.control_panel.u_input.setValue(float(self.solver.flow.U_inf))
@@ -775,12 +876,97 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         print("Full reset complete - GUI and solver restored to initial state")
     
     def reset_simulation(self, keep_timer_running: bool = True) -> None:
-        """Reset the simulation to initial conditions (full GUI reset)."""
+        """Reset the simulation to initial conditions while preserving current GUI parameters."""
         try:
+            print("Resetting simulation (preserving current GUI parameters)...")
+            
+            # Stop visualization timer
+            self.refresh_timer.stop()
+            
+            # Stop simulation thread with proper cleanup
+            self.sim_controller.stop_simulation()
+            
+            # Wait for simulation thread to actually stop
+            import time
+            if hasattr(self.sim_controller, 'simulation_worker') and self.sim_controller.simulation_worker:
+                worker = self.sim_controller.simulation_worker
+                if worker.thread and worker.thread.is_alive():
+                    for _ in range(50):  # Wait up to 5 seconds
+                        if not worker.thread.is_alive():
+                            break
+                        time.sleep(0.1)
+                    if worker.thread.is_alive():
+                        print("Warning: Simulation thread did not stop in 5 seconds")
+            
             # Clear error plot visualization data before reset
             if hasattr(self, 'flow_viz'):
                 self.flow_viz.clear_error_plot()
-            self.full_reset_to_initial()
+            
+            # Clear LDC validation overlays
+            if hasattr(self, 'disable_ldc_validation'):
+                self.disable_ldc_validation()
+            
+            # Clear VK vortex tracking overlays
+            if hasattr(self, 'disable_vk_vortex_tracking'):
+                self.disable_vk_vortex_tracking()
+            
+            # Reset solver state without recreating solver object
+            # Reset iteration counter
+            self.solver.iteration = 0
+            
+            # Reset history
+            self.solver.history = {
+                'time': [0.0],
+                'dt': [self.solver.dt],
+                'l2_change': [0.0],
+                'rms_change': [0.0],
+                'max_change': [0.0],
+                'change_99p': [0.0],
+                'rel_change': [0.0],
+                'l2_change_u': [0.0],
+                'l2_change_v': [0.0],
+                'rms_divergence': [0.0],
+                'l2_divergence': [0.0],
+                'drag': [0.0],
+                'lift': [0.0],
+                'airfoil_metrics': {'CL': [], 'CD': [], 'stagnation_x': [], 'separation_x': [], 'Cp_min': [], 'wake_deficit': []}
+            }
+            
+            # Reinitialize flow fields based on current flow type (preserving current parameters)
+            flow_type = self.solver.sim_params.flow_type
+            solver_type = getattr(self.solver.sim_params, 'solver_type', 'navier_stokes')
+            
+            if solver_type == 'lattice_boltzmann':
+                # LBM solver uses _initialize_flow
+                if hasattr(self.solver, '_initialize_flow'):
+                    self.solver._initialize_flow()
+                    self.solver.mask = self.solver._compute_mask()
+                else:
+                    print("Warning: LBM solver missing _initialize_flow method")
+            else:
+                # Baseline solver uses flow-specific initializers
+                if flow_type == 'von_karman':
+                    self.solver._initialize_von_karman_flow()
+                    # Recompute mask with current parameters
+                    self.solver.mask = self.solver._compute_mask()
+                elif flow_type == 'lid_driven_cavity':
+                    self.solver._initialize_cavity_flow()
+                    self.solver.mask = self.solver._compute_mask()
+                elif flow_type == 'taylor_green':
+                    self.solver._initialize_taylor_green_flow()
+                    self.solver.mask = self.solver._compute_mask()
+                else:
+                    print(f"Warning: Unknown flow type '{flow_type}' during reset")
+            
+            # Clear paused state
+            self.is_paused = False
+            
+            # Update button states
+            self.control_panel.start_btn.setEnabled(True)
+            self.control_panel.pause_btn.setEnabled(False)
+            
+            print("Reset complete - flow fields reinitialized with current GUI parameters")
+            
         except Exception as e:
             print(f"ERROR during reset: {e}")
             import traceback
@@ -1629,6 +1815,108 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
         # No additional action needed - just ensures settings are applied immediately
         pass
     
+    def open_trace_viewer(self) -> None:
+        """Open the solver trace viewer window."""
+        if not TRACE_VIEWER_AVAILABLE:
+            QMessageBox.warning(self, "Trace Viewer Unavailable",
+                              "The trace viewer is not available. Please ensure all dependencies are installed.")
+            return
+
+        try:
+            # Create and show trace viewer window
+            self.trace_viewer_window = TraceViewerWindow(self)
+            self.trace_viewer_window.show()
+            print("Trace viewer opened")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open trace viewer: {str(e)}")
+            print(f"Error opening trace viewer: {e}")
+
+    def on_snapshot_recording_toggled(self, state: int) -> None:
+        """Handle snapshot recording checkbox toggle."""
+        self.snapshot_recording_enabled = (state == Qt.CheckState.Checked.value)
+        if self.snapshot_recording_enabled:
+            print(f"Snapshot recording enabled (interval: {self.snapshot_save_interval})")
+        else:
+            print("Snapshot recording disabled")
+
+    def on_snapshot_interval_changed(self, value: int) -> None:
+        """Handle snapshot interval slider change."""
+        self.snapshot_save_interval = value
+        self.floating_control_bar.snapshot_interval_label.setText(str(value))
+        if self.snapshot_recorder is not None:
+            self.snapshot_recorder.save_interval = value
+        print(f"Snapshot save interval changed to {value}")
+
+    def select_snapshot_directory(self) -> None:
+        """Open dialog to select snapshot output directory."""
+        from PyQt6.QtWidgets import QFileDialog
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Snapshot Output Directory",
+            self.snapshot_output_dir
+        )
+        
+        if directory:
+            self.snapshot_output_dir = directory
+            print(f"Snapshot output directory changed to: {directory}")
+            # Reinitialize recorder with new directory
+            if TRACE_VIEWER_AVAILABLE and self.snapshot_recorder is not None:
+                self.snapshot_recorder = SnapshotRecorder(
+                    output_dir=self.snapshot_output_dir,
+                    save_interval=self.snapshot_save_interval
+                )
+
+    def record_snapshot_if_enabled(self) -> None:
+        """Record a snapshot if recording is enabled."""
+        if not self.snapshot_recording_enabled or self.snapshot_recorder is None:
+            return
+
+        try:
+            # Get current simulation state
+            sim_state = self.solver.state
+            
+            # Convert JAX arrays to numpy
+            u_np = np.array(sim_state.u)
+            v_np = np.array(sim_state.v)
+            p_np = np.array(sim_state.p)
+            mask_np = np.array(self.solver.mask)
+            
+            # Get parameters
+            dt = float(self.solver.dt)
+            nu = float(self.solver.flow.nu)
+            dx = float(self.solver.grid.dx)
+            dy = float(self.solver.grid.dy)
+            Re = float(self.solver.flow.Re)
+            
+            # Record snapshot
+            self.snapshot_recorder.record_step(
+                u=u_np,
+                v=v_np,
+                p=p_np,
+                mask=mask_np,
+                dt=dt,
+                nu=nu,
+                dx=dx,
+                dy=dy,
+                Re=Re,
+                flow_type=self.solver.sim_params.flow_type,
+                solver_metadata={
+                    "pressure_solver": self.solver.sim_params.pressure_solver,
+                    "advection_scheme": self.solver.sim_params.advection_scheme
+                },
+                timestamp=sim_state.iteration * dt
+            )
+        except Exception as e:
+            print(f"Error recording snapshot: {e}")
+
+    def refresh_display(self) -> None:
+        """Override to add snapshot recording."""
+        # Call parent method to update display
+        super().refresh_display()
+        
+        # Record snapshot if enabled
+        self.record_snapshot_if_enabled()
+    
     def change_upscale_factor(self, value: int) -> None:
         """Change the visualization upscale factor for smooth rendering"""
         if hasattr(self, 'flow_viz') and self.flow_viz is not None:
@@ -1676,6 +1964,50 @@ class BaselineViewerRefactored(QMainWindow, ParameterHandlers, DisplayManager, F
             self.toggle_adaptive_timestep(2)  # Checked state
         else:
             self.toggle_adaptive_timestep(0)  # Unchecked state
+    
+    def on_flow_type_changed(self, flow_type: str) -> None:
+        """Handle flow type dropdown change - enable/disable validation overlays."""
+        # Disable LDC validation when switching away from LDC flow
+        if flow_type != "lid_driven_cavity":
+            self.disable_ldc_validation()
+        
+        # Enable VK vortex tracking for von_karman flow
+        if flow_type == "von_karman":
+            self.enable_vk_vortex_tracking()
+        else:
+            self.disable_vk_vortex_tracking()
+    
+    def on_ldc_re_selected(self, re_value: int) -> None:
+        """Handle LDC benchmark Re radio button selection."""
+        # Apply the Reynolds number change to solver
+        self.solver.flow.Re = float(re_value)
+        self.solver.flow.resolve()  # Recompute viscosity based on new Re
+        
+        # Update solver constraints
+        self.solver.flow.constraints.lock_Re = True
+        self.solver.flow.constraints.lock_nu = False
+        self.solver.flow.constraints.lock_U = True
+        
+        print(f"Applied LDC benchmark Re={re_value} to solver")
+        
+        # Enable LDC validation overlay
+        self.enable_ldc_validation(re_value)
+        
+        # Trigger solver recompilation with new parameters
+        if hasattr(self, 'sim_controller'):
+            self.sim_controller.stop_simulation()
+        self.refresh_timer.stop()
+        
+        # Reset UI controls
+        self.control_panel.start_btn.setEnabled(True)
+        self.control_panel.pause_btn.setEnabled(False)
+        
+        # Recompile solver with new viscosity
+        try:
+            self.solver._step_jit = self.solver.get_step_jit()
+            print(f"Solver recompiled for Re={re_value}")
+        except Exception as e:
+            print(f"Warning: Solver recompilation failed: {e}")
     
     def toggle_adaptive_timestep(self, state) -> None:
         """Switch between fixed and adaptive timestep modes."""

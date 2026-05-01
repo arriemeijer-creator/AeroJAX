@@ -235,8 +235,8 @@ class LBMSolver:
             # Force binary mask for LBM bounce-back to work properly
             mask = jnp.where(mask > 0.5, 1.0, 0.0)
         elif self.sim_params.obstacle_type == 'three_cylinder_array':
-            from obstacles.cylinder_array import create_cylinder_array_mask
-            mask = create_cylinder_array_mask(self.grid.X, self.grid.Y, 
+            from obstacles.cylinder_array import create_three_cylinder_mask
+            mask = create_three_cylinder_mask(self.grid.X, self.grid.Y,
                                             self.sim_params.cylinder_x, self.sim_params.cylinder_y,
                                             self.sim_params.eps)
             # Force binary mask for LBM bounce-back to work properly
@@ -383,6 +383,11 @@ class LBMSolver:
             from solver.operators import scalar_advection_diffusion_nonperiodic
             dx = self.grid.lx / self.grid.nx
             dy = self.grid.ly / self.grid.ny
+            
+            # Ensure dye field exists
+            if not hasattr(self, 'c') or self.c is None:
+                self.c = jnp.zeros((self.grid.nx, self.grid.ny))
+                
             self.c = scalar_advection_diffusion_nonperiodic(
                 self.c, self.u, self.v, self.dt, dx, dy, self.lbm_params.dye_diffusivity
             )

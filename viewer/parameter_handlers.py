@@ -7,11 +7,14 @@ advection schemes, pressure solvers, LES settings, and timesteps.
 import jax
 import jax.numpy as jnp
 import gc
+import logging
 from typing import Optional
 
 from solver import GridParams
 from solver.params import SimState
 from viewer.state import store, set_reynolds_number, set_u_inf, set_nu
+
+logger = logging.getLogger(__name__)
 
 
 class ParameterHandlers:
@@ -41,7 +44,7 @@ class ParameterHandlers:
             self.solver.flow.constraints.lock_Re = lock_Re
 
             # Apply stored new values from UI
-            print(f"UI values: U={new_U}, ν={new_nu}, Re={new_Re}")
+            logger.info(f"UI values: U={new_U}, ν={new_nu}, Re={new_Re}")
 
             # Compute characteristic length
             if self.solver.sim_params.obstacle_type == 'naca_airfoil':
@@ -82,9 +85,9 @@ class ParameterHandlers:
 
             # Warn about high velocities that may cause instability
             if new_U > 5.0:
-                print(f"WARNING: High inlet velocity U={new_U:.2f} m/s may cause numerical instability.")
-                print(f"Consider using a smaller timestep or reducing velocity. Current grid dx={self.solver.grid.dx:.4f} m")
-                print(f"Recommended CFL-based dt for U={new_U:.2f} m/s: ~{0.2 * self.solver.grid.dx / new_U:.6f} s")
+                logger.warning(f"High inlet velocity U={new_U:.2f} m/s may cause numerical instability.")
+                logger.info(f"Consider using a smaller timestep or reducing velocity. Current grid dx={self.solver.grid.dx:.4f} m")
+                logger.info(f"Recommended CFL-based dt for U={new_U:.2f} m/s: ~{0.2 * self.solver.grid.dx / new_U:.6f} s")
 
             # Dispatch Redux actions to update store state (Redux is now single source of truth)
             store.dispatch(set_reynolds_number(new_Re))
@@ -102,11 +105,11 @@ class ParameterHandlers:
                 from solver.params import compute_eps_multiplier
                 self.solver.sim_params.eps_multiplier = compute_eps_multiplier(new_Re)
                 self.solver.sim_params.eps = self.solver.sim_params.eps_multiplier * self.solver.grid.dx
-                print(f"Auto-updated eps_multiplier = {self.solver.sim_params.eps_multiplier} from Re = {new_Re:.1f}")
+                logger.info(f"Auto-updated eps_multiplier = {self.solver.sim_params.eps_multiplier} from Re = {new_Re:.1f}")
 
                 # Recompute mask with new epsilon
                 self.solver.mask = self.solver._compute_mask()
-                print(f"Recomputed mask with new ε = {self.solver.sim_params.eps:.4f}")
+                logger.info(f"Recomputed mask with new ε = {self.solver.sim_params.eps:.4f}")
 
             # Recalculate dt based on new velocity for stability
             # Use Re-dependent parameters from params.py instead of hardcoded values
@@ -122,7 +125,7 @@ class ParameterHandlers:
 
             self.solver.dt = min(dt_cfl, dt_diffusion, dt_max)
             self.solver.dt = max(self.solver.dt, self.solver.sim_params.dt_min)
-            print(f"Recalculated dt for U={new_U:.2f} m/s: dt={self.solver.dt:.6f} (CFL={cfl_target}, Re={new_Re:.0f})")
+            logger.info(f"Recalculated dt for U={new_U:.2f} m/s: dt={self.solver.dt:.6f} (CFL={cfl_target}, Re={new_Re:.0f})")
 
             # Update GUI to show the derived parameter (not the locked ones)
             if not self.solver.flow.constraints.lock_U:
@@ -147,8 +150,8 @@ class ParameterHandlers:
 
             # Suggest grid refinement for high Re
             if new_Re > 15000 and self.solver.grid.nx < 1024:
-                print(f"WARNING: Re={new_Re:.0f} on {self.solver.grid.nx}×{self.solver.grid.ny} grid may be unstable.")
-                print(f"Suggested grid: {min(2048, self.solver.grid.nx*2)}×{min(768, self.solver.grid.ny*2)}")
+                logger.warning(f"Re={new_Re:.0f} on {self.solver.grid.nx}×{self.solver.grid.ny} grid may be unstable.")
+                logger.info(f"Suggested grid: {min(2048, self.solver.grid.nx*2)}×{min(768, self.solver.grid.ny*2)}")
 
             # Reinitialize flow state with new parameters (only for Navier-Stokes solver)
             if hasattr(self.solver, '_initialize_von_karman_flow'):
@@ -164,9 +167,9 @@ class ParameterHandlers:
 
             self.solver.iteration = 0
             
-            print(f"Flow parameters applied")
-            print(f"  Constraints: U={self.solver.flow.constraints.lock_U}, nu={self.solver.flow.constraints.lock_nu}, Re={self.solver.flow.constraints.lock_Re}")
-            print(f"  Resolved: U={self.solver.flow.U_inf:.3f}, nu={self.solver.flow.nu:.6f}, Re={self.solver.flow.Re:.1f}, L={self.solver.flow.L_char:.3f}")
+            logger.info("Flow parameters applied")
+            logger.info(f"  Constraints: U={self.solver.flow.constraints.lock_U}, nu={self.solver.flow.constraints.lock_nu}, Re={self.solver.flow.constraints.lock_Re}")
+            logger.info(f"  Resolved: U={self.solver.flow.U_inf:.3f}, nu={self.solver.flow.nu:.6f}, Re={self.solver.flow.Re:.1f}, L={self.solver.flow.L_char:.3f}")
             
             # Update spinboxes with resolved values
             self.control_panel.u_input.setValue(self.solver.flow.U_inf)
@@ -177,7 +180,7 @@ class ParameterHandlers:
             self.control_panel.pause_btn.setEnabled(False)
             
         except Exception as e:
-            print(f"Error updating flow parameters: {e}")
+            logger.error(f"Error updating flow parameters: {e}")
             import traceback
             traceback.print_exc()
             self.control_panel.start_btn.setEnabled(True)
@@ -227,9 +230,9 @@ class ParameterHandlers:
                 with open(config_file, 'w', encoding='utf-8') as f:
                     f.write(content)
                 
-                print(f"\n✓ Precision changed to {precision}")
-                print(f"✓ JAX config updated")
-                print(f"✓ Restarting application...")
+                logger.info(f"Precision changed to {precision}")
+                logger.info("JAX config updated")
+                logger.info("Restarting application...")
                 
                 # Clean up and restart
                 self.close()
@@ -239,13 +242,13 @@ class ParameterHandlers:
                 subprocess.Popen([sys.executable] + sys.argv)
                 
             else:
-                print(f"\n✗ Could not find JAX config line in {config_file}")
-                print("Please manually change: jax.config.update('jax_enable_x64', {enable_x64})")
+                logger.warning(f"Could not find JAX config line in {config_file}")
+                logger.warning("Please manually change: jax.config.update('jax_enable_x64', {enable_x64})")
                 
         except Exception as e:
-            print(f"\n✗ Error updating precision: {e}")
-            print(f"Please manually change in solver/config.py:")
-            print(f"  jax.config.update('jax_enable_x64', {enable_x64})")
+            logger.error(f"Error updating precision: {e}")
+            logger.error("Please manually change in solver/config.py:")
+            logger.error(f"  jax.config.update('jax_enable_x64', {enable_x64})")
     
     def update_grid_type(self) -> None:
         """Change the grid type between collocated and MAC staggered."""
@@ -253,10 +256,10 @@ class ParameterHandlers:
         current_grid_type = self.solver.sim_params.grid_type
         
         if new_grid_type == current_grid_type:
-            print(f"Grid type already set to {new_grid_type}")
+            logger.info(f"Grid type already set to {new_grid_type}")
             return
         
-        print(f"Changing grid type from {current_grid_type} to {new_grid_type}")
+        logger.info(f"Changing grid type from {current_grid_type} to {new_grid_type}")
         
         self.refresh_timer.stop()
         self.sim_controller.stop_simulation()
@@ -323,7 +326,7 @@ class ParameterHandlers:
                 
                 # Restore grid dimensions if they changed during initialization
                 if self.solver.grid.nx != current_nx or self.solver.grid.ny != current_ny:
-                    print(f"WARNING: Grid dimensions changed during grid type change, restoring to {current_nx}x{current_ny}")
+                    logger.warning(f"Grid dimensions changed during grid type change, restoring to {current_nx}x{current_ny}")
                     self.solver.grid.nx = current_nx
                     self.solver.grid.ny = current_ny
                     self.solver.grid.lx = current_lx
@@ -332,6 +335,13 @@ class ParameterHandlers:
                     x = jnp.linspace(0, self.solver.grid.lx, self.solver.grid.nx)
                     y = jnp.linspace(0, self.solver.grid.ly, self.solver.grid.ny)
                     self.solver.grid.X, self.solver.grid.Y = jnp.meshgrid(x, y, indexing='ij')
+                    # Recreate staggered grid coordinates for MAC grid
+                    self.solver.grid.dx = self.solver.grid.lx / self.solver.grid.nx
+                    self.solver.grid.dy = self.solver.grid.ly / self.solver.grid.ny
+                    self.solver.grid.x_u = jnp.linspace(0, self.solver.grid.lx, self.solver.grid.nx + 1)
+                    self.solver.grid.y_v = jnp.linspace(0, self.solver.grid.ly, self.solver.grid.ny + 1)
+                    self.solver.grid.X_u, _ = jnp.meshgrid(self.solver.grid.x_u, y, indexing='ij')
+                    _, self.solver.grid.Y_v = jnp.meshgrid(x, self.solver.grid.y_v, indexing='ij')
                     # Reinitialize with correct dimensions
                     if self.solver.sim_params.flow_type == 'lid_driven_cavity':
                         self.solver._initialize_cavity_flow()
@@ -339,6 +349,15 @@ class ParameterHandlers:
                         self.solver._initialize_taylor_green_flow()
                     else:
                         self.solver._initialize_von_karman_flow()
+            
+            # Ensure staggered grid coordinates are up-to-date for MAC grid
+            # This is needed even if dimensions didn't change, to ensure consistency
+            self.solver.grid.dx = self.solver.grid.lx / self.solver.grid.nx
+            self.solver.grid.dy = self.solver.grid.ly / self.solver.grid.ny
+            self.solver.grid.x_u = jnp.linspace(0, self.solver.grid.lx, self.solver.grid.nx + 1)
+            self.solver.grid.y_v = jnp.linspace(0, self.solver.grid.ly, self.solver.grid.ny + 1)
+            self.solver.grid.X_u, _ = jnp.meshgrid(self.solver.grid.x_u, self.solver.grid.y, indexing='ij')
+            _, self.solver.grid.Y_v = jnp.meshgrid(self.solver.grid.x, self.solver.grid.y_v, indexing='ij')
             
             # Update divergence/vorticity functions for new grid type
             if new_grid_type == 'mac':
@@ -353,6 +372,11 @@ class ParameterHandlers:
                     self.solver._vorticity = jax.jit(vorticity_staggered, static_argnums=(2, 3))
                     self.solver._divergence = jax.jit(divergence_staggered, static_argnums=(2, 3))
             else:
+                # Import collocated grid operators
+                from solver.operators import (
+                    divergence, divergence_nonperiodic,
+                    vorticity, vorticity_nonperiodic
+                )
                 if self.solver.sim_params.flow_type == 'von_karman' or self.solver.sim_params.flow_type == 'lid_driven_cavity':
                     self.solver._vorticity = jax.jit(vorticity_nonperiodic, static_argnums=(2, 3))
                     self.solver._divergence = jax.jit(divergence_nonperiodic, static_argnums=(2, 3))
@@ -373,15 +397,14 @@ class ParameterHandlers:
                 prev_error=self.solver.dt_controller.prev_error if self.solver.dt_controller else 0.0
             )
             
-            # Update visualization for new grid type
-            if hasattr(self, 'flow_viz'):
-                self.flow_viz.solver = self.solver
+            logger.info(f"Grid type successfully changed to {new_grid_type}")
+            logger.info(f"New velocity shapes: u={self.solver.u.shape}, v={self.solver.v.shape}")
             
-            print(f"Grid type successfully changed to {new_grid_type}")
-            print(f"New velocity shapes: u={self.solver.u.shape}, v={self.solver.v.shape}")
+            # Reset simulation to properly reinitialize visualization and solver state
+            self.reset_simulation(keep_timer_running=False)
             
         except Exception as e:
-            print(f"ERROR: Failed to change grid type: {e}")
+            logger.error(f"Failed to change grid type: {e}")
             import traceback
             traceback.print_exc()
             # Restore original grid type
@@ -551,7 +574,7 @@ class ParameterHandlers:
                 self.solver._vorticity = jax.jit(vorticity, static_argnums=(2, 3))
                 self.solver._divergence = jax.jit(divergence, static_argnums=(2, 3))
             except Exception as e:
-                print(f"Error recompiling JIT functions: {e}")
+                logger.error(f"Error recompiling JIT functions: {e}")
                 # Fallback: create minimal JIT functions
                 self.solver._step_jit = self.solver.get_step_jit()
             
@@ -559,7 +582,7 @@ class ParameterHandlers:
             try:
                 self.flow_viz.update_plots_for_new_grid(grid_nx, grid_ny, grid_lx, grid_ly)
             except Exception as viz_error:
-                print(f"Warning: Failed to update visualization: {viz_error}")
+                logger.warning(f"Failed to update visualization: {viz_error}")
                 import traceback
                 traceback.print_exc()
             
@@ -567,10 +590,10 @@ class ParameterHandlers:
             try:
                 self.sim_controller.update_grid_size(grid_nx, grid_ny)
             except Exception as controller_error:
-                print(f"Warning: Failed to update simulation controller: {controller_error}")
+                logger.warning(f"Failed to update simulation controller: {controller_error}")
             
-            print(f"Grid updated to {grid_nx}x{grid_ny} ({grid_lx}x{grid_ly})")
-            print(f"Flow reinitialized and JIT functions recompiled")
+            logger.info(f"Grid updated to {grid_nx}x{grid_ny} ({grid_lx}x{grid_ly})")
+            logger.info("Flow reinitialized and JIT functions recompiled")
             
             # Update NACA chord range based on new domain size
             max_chord = min(grid_lx * 0.5, grid_ly * 0.6, 5.0)  # Max 50% of width, 60% of height, or 5.0
@@ -649,8 +672,15 @@ class ParameterHandlers:
             # Recompute mask with new radius
             self.solver.mask = self.solver._compute_mask()
             
-            # Recompile solver
-            self.solver._step_jit = jax.jit(self.solver._step)
+            # Recompile solver (handle different solver types)
+            if hasattr(self.solver, '_step'):
+                # Baseline solver
+                self.solver._step_jit = jax.jit(self.solver._step)
+            elif hasattr(self.solver, 'get_step_jit'):
+                # LBM solver
+                self.solver._step_jit = self.solver.get_step_jit()
+            else:
+                print("Warning: Unknown solver type, skipping recompilation")
             
             # Don't reset simulation - just recompile and continue
             self.control_panel.start_btn.setEnabled(True)
@@ -1090,5 +1120,7 @@ class ParameterHandlers:
             self.control_panel.solver_type_combo.blockSignals(False)
             return
         
-        # Restart simulation
-        self.sim_controller.start_simulation(self.sim_controller.callbacks)
+        # Do NOT restart simulation automatically - let user start it manually
+        # This prevents background simulation when changing solver type
+        self.control_panel.start_btn.setEnabled(True)
+        self.control_panel.pause_btn.setEnabled(False)

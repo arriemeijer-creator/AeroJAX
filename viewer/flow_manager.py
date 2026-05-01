@@ -28,6 +28,10 @@ class FlowManager:
                 if current_obstacle_type != new_obstacle_type:
                     print(f"[STORE SYNC] Applying obstacle type change: {current_obstacle_type} -> {new_obstacle_type}")
                     
+                    # Stop simulation before obstacle type change to prevent background execution
+                    if hasattr(self, 'sim_controller'):
+                        self.sim_controller.stop_simulation()
+                    
                     # Track previous obstacle type to prevent position handler from recomputing mask
                     self._previous_obstacle_type = current_obstacle_type
                     
@@ -375,14 +379,10 @@ class FlowManager:
             
             print(f"Flow type changed to {selected_flow}")
             
-            # Restart simulation after flow type change
-            if hasattr(self, 'sim_controller'):
-                # Pass stored callbacks if available, otherwise None
-                callbacks = self.sim_controller.callbacks if hasattr(self.sim_controller, 'callbacks') else None
-                self.sim_controller.start_simulation(callbacks)
-            
-            self.control_panel.start_btn.setEnabled(False)
-            self.control_panel.pause_btn.setEnabled(True)
+            # Do NOT restart simulation automatically - let user start it manually
+            # This prevents background simulation when changing flow type
+            self.control_panel.start_btn.setEnabled(True)
+            self.control_panel.pause_btn.setEnabled(False)
             
         except Exception as e:
             print(f"Error changing flow type: {e}")

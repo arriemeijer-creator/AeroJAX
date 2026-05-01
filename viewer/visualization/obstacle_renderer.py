@@ -6,9 +6,21 @@ import numpy as np
 import jax.numpy as jnp
 import pyqtgraph as pg
 from PyQt6 import sip
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ObstacleRenderer:
     """Handles rendering of obstacles (cylinder, NACA airfoils)"""
+
+    # Dict mapping obstacle types to their handler methods
+    OBSTACLE_HANDLERS = {
+        'naca_airfoil': '_draw_naca_outline',
+        'cow': '_draw_cow_outline',
+        'three_cylinder_array': '_draw_cylinder_array_outline',
+        'custom': '_draw_custom_outline',
+        'cylinder': '_draw_cylinder_outline',
+    }
 
     def __init__(self, vel_outline, div_outline, vort_outline, scalar_outline, pressure_outline):
         self.vel_outline = vel_outline
@@ -76,24 +88,18 @@ class ObstacleRenderer:
             
             # Get obstacle parameters
             obstacle_type = getattr(solver.sim_params, 'obstacle_type', 'cylinder')
-            
-            if obstacle_type == 'naca_airfoil':
-                # Draw NACA airfoil outline
-                self._draw_naca_outline(solver)
-            elif obstacle_type == 'cow':
-                # Draw cow outline
-                self._draw_cow_outline(solver)
-            elif obstacle_type == 'three_cylinder_array':
-                # Draw three-cylinder array outline
-                self._draw_cylinder_array_outline(solver)
-            elif obstacle_type == 'custom':
-                # Draw custom obstacle outline
-                self._draw_custom_outline(solver)
+
+            # Use dict mapping to get handler method
+            handler_method_name = self.OBSTACLE_HANDLERS.get(obstacle_type, '_draw_cylinder_outline')
+            handler = getattr(self, handler_method_name, None)
+
+            if handler:
+                handler(solver)
             else:
-                # Draw cylinder outline
+                logger.warning(f"No handler found for obstacle type: {obstacle_type}, using default cylinder")
                 self._draw_cylinder_outline(solver)
         except Exception as e:
-            print(f"Error in update_obstacle_outlines: {e}")
+            logger.error(f"Error in update_obstacle_outlines: {e}")
             import traceback
             traceback.print_exc()
     

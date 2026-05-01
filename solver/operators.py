@@ -4,6 +4,7 @@ Differential operators for the Navier-Stokes solver.
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.ndimage import map_coordinates
 from typing import Tuple
 
 
@@ -144,6 +145,62 @@ def scalar_advection_diffusion_nonperiodic(c: jnp.ndarray, u: jnp.ndarray, v: jn
     c_new = c + dt * (-adv_c + diff_c)
     
     # Clamp to [0, 1]
+    c_new = jnp.clip(c_new, 0.0, 1.0)
+    
+    return c_new
+
+
+@jax.jit
+def interpolate_at_points(field: jnp.ndarray, x_coords: jnp.ndarray, y_coords: jnp.ndarray) -> jnp.ndarray:
+    """Bilinear interpolation at arbitrary points using map_coordinates
+    
+    Args:
+        field: 2D array to interpolate from
+        x_coords: x-coordinates of interpolation points (same shape as field)
+        y_coords: y-coordinates of interpolation points (same shape as field)
+    
+    Returns:
+        Interpolated values at the specified points
+    """
+    # Stack coordinates for map_coordinates (expects [coords, dim])
+    coords = jnp.stack([y_coords.ravel(), x_coords.ravel()], axis=0)
+    
+    # Interpolate with boundary handling (nearest for out-of-bounds)
+    interpolated = map_coordinates(field, coords, order=1, mode='nearest')
+    
+    return interpolated.reshape(field.shape)
+
+
+@jax.jit
+def scalar_advection_semi_lagrangian(c: jnp.ndarray, u: jnp.ndarray, v: jnp.ndarray, 
+                                     dx: float, dy: float, dt: float) -> jnp.ndarray:
+    """Semi-Lagrangian scheme - unconditionally stable, good for large dt
+    
+    Traces particles backward in time to find where they came from, then interpolates
+    the field value at that departure point. This scheme is unconditionally stable
+    and works well for large time steps, making it suitable for real-time simulations.
+    
+    Args:
+        c: Scalar field to advect (e.g., dye concentration)
+        u: x-velocity field
+        v: y-velocity field
+        dx: Grid spacing in x
+        dy: Grid spacing in y
+        dt: Time step
+    
+    Returns:
+        Advected scalar field
+    """
+    # Compute departure points (where particles came from)
+    # x_dep[i,j] = i - u[i,j] * dt / dx
+    # y_dep[i,j] = j - v[i,j] * dt / dy
+    x_dep = jnp.arange(c.shape[0])[:, None] - u * dt / dx
+    y_dep = jnp.arange(c.shape[1])[None, :] - v * dt / dy
+    
+    # Bilinear interpolation from departure points
+    c_new = interpolate_at_points(c, x_dep, y_dep)
+    
+    # Clamp to [0, 1] for dye concentration
     c_new = jnp.clip(c_new, 0.0, 1.0)
     
     return c_new

@@ -40,7 +40,7 @@ from .metrics import (
     get_airfoil_surface_mask,
     find_stagnation_point, find_separation_point
 )
-from .solver import BaselineSolver, update_dt_pure, step_pure
+from .solver import BaselineSolver, update_dt_pure, step_pure, differentiable_rollout, design_loss
 
 __all__ = [
     # Configuration
@@ -73,5 +73,5 @@ __all__ = [
     'get_airfoil_surface_mask',
     'find_stagnation_point', 'find_separation_point',
     # Solver
-    'BaselineSolver', 'update_dt_pure', 'step_pure',
+    'BaselineSolver', 'update_dt_pure', 'step_pure', 'differentiable_rollout', 'design_loss',
 ]

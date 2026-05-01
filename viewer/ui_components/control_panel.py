@@ -5,7 +5,7 @@ Main control panel orchestrating all UI components.
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QLabel, QPushButton, QSpinBox, QComboBox, QDoubleSpinBox,
-    QCheckBox, QSlider
+    QCheckBox, QSlider, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt
 from .top_console import TopConsole
@@ -159,13 +159,37 @@ class ControlPanel(QWidget):
 
         # ========== FLOW TYPE GROUP ==========
         flow_group = CollapsibleGroupBox("Flow Type", start_collapsed=True)
-        flow_layout = QHBoxLayout()
-        flow_layout.addWidget(QLabel("Flow:"))
+        flow_layout = QVBoxLayout()
+        flow_row = QHBoxLayout()
+        flow_row.addWidget(QLabel("Flow:"))
         self.flow_combo = QComboBox()
         self.flow_combo.addItems(["von_karman", "lid_driven_cavity", "taylor_green"])
         self.flow_combo.setMaximumWidth(150)
-        flow_layout.addWidget(self.flow_combo)
-        flow_layout.addStretch()
+        self.flow_combo.currentTextChanged.connect(self.on_flow_type_changed)
+        flow_row.addWidget(self.flow_combo)
+        flow_row.addStretch()
+        flow_layout.addLayout(flow_row)
+        
+        # LDC Benchmark Re selection (shown only for lid_driven_cavity)
+        self.ldc_re_widget = QWidget()
+        self.ldc_re_row = QHBoxLayout(self.ldc_re_widget)
+        self.ldc_re_row.setContentsMargins(0, 0, 0, 0)
+        self.ldc_re_row.addWidget(QLabel("LDC Benchmark Re:"))
+        self.ldc_re_button_group = QButtonGroup(self)
+        self.ldc_re_radios = {}
+        ldc_re_values = [100, 400, 1000, 3200, 5000, 7500]
+        for Re in ldc_re_values:
+            radio = QRadioButton(str(Re))
+            self.ldc_re_radios[Re] = radio
+            self.ldc_re_button_group.addButton(radio, Re)
+            self.ldc_re_button_group.idClicked.connect(self.on_ldc_re_selected)
+            self.ldc_re_row.addWidget(radio)
+            if Re == 1000:  # Default selection
+                radio.setChecked(True)
+        self.ldc_re_row.addStretch()
+        flow_layout.addWidget(self.ldc_re_widget)
+        self.ldc_re_widget.setVisible(False)  # Initially hidden
+        
         flow_group.setLayout(flow_layout)
         sidebar_layout.addWidget(flow_group)
 
@@ -474,6 +498,26 @@ class ControlPanel(QWidget):
         return self.obstacle_controls.y_position_label
 
     @property
+    def dynamic_airfoil_checkbox(self):
+        return self.obstacle_controls.dynamic_airfoil_checkbox
+
+    @property
+    def min_aoa_spinbox(self):
+        return self.obstacle_controls.min_aoa_spinbox
+
+    @property
+    def max_aoa_spinbox(self):
+        return self.obstacle_controls.max_aoa_spinbox
+
+    @property
+    def aoa_increment_spinbox(self):
+        return self.obstacle_controls.aoa_increment_spinbox
+
+    @property
+    def steps_per_increment_slider(self):
+        return self.obstacle_controls.steps_per_increment_slider
+
+    @property
     def cylinder_radio(self):
         return self.obstacle_controls.cylinder_radio
 
@@ -705,3 +749,26 @@ class ControlPanel(QWidget):
         if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
             if hasattr(self.parent_viewer, 'on_obstacle_type_selected'):
                 self.parent_viewer.on_obstacle_type_selected(obstacle_type)
+    
+    def on_flow_type_changed(self, flow_type: str) -> None:
+        """Handle flow type dropdown change - show/hide LDC benchmark controls."""
+        # Show LDC Re radio buttons only for lid_driven_cavity
+        is_ldc = (flow_type == "lid_driven_cavity")
+        self.ldc_re_widget.setVisible(is_ldc)
+        
+        # Also delegate to parent viewer
+        if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
+            if hasattr(self.parent_viewer, 'on_flow_type_changed'):
+                self.parent_viewer.on_flow_type_changed(flow_type)
+    
+    def on_ldc_re_selected(self, re_value: int) -> None:
+        """Handle LDC benchmark Re radio button selection."""
+        # Update Reynolds number input
+        self.re_input.setValue(float(re_value))
+        self.lock_re_cb.setChecked(True)
+        self.lock_nu_cb.setChecked(False)  # Allow viscosity to be computed
+        
+        # Delegate to parent viewer to apply the Re change
+        if hasattr(self, 'parent_viewer') and self.parent_viewer is not None:
+            if hasattr(self.parent_viewer, 'on_ldc_re_selected'):
+                self.parent_viewer.on_ldc_re_selected(re_value)

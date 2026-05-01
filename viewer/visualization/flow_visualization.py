@@ -9,8 +9,12 @@ import pyqtgraph as pg
 from PyQt6.QtCore import Qt, QRectF, QTimer
 from PyQt6 import sip
 import scipy.ndimage
+import warnings
 from .obstacle_renderer import ObstacleRenderer
 from .particle_system import ParticleSystem
+
+# Suppress PyQtGraph overflow warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='pyqtgraph', message='.*overflow encountered in cast.*')
 
 
 def _upscale_for_display(data, scale_factor=2):
@@ -288,14 +292,15 @@ class FlowVisualization:
         self.div_plot.setLabel('bottom', 'x')
         self.div_plot.setVisible(False)  # Hidden by default
 
-        # Row 1: Vorticity (left) | Pressure (right)
-        self.vort_plot = self.plot_widget.addPlot(title="Vorticity", row=1, col=0, colspan=1)
+        # Row 1: Vorticity (spans 2 columns by default, 1 when pressure is visible) | Pressure (right)
+        self.vort_plot = self.plot_widget.addPlot(title="Vorticity", row=1, col=0, colspan=2)
         self.vort_plot.setLabel('left', 'y')
         self.vort_plot.setLabel('bottom', 'x')
 
         self.pressure_plot = self.plot_widget.addPlot(title="Pressure", row=1, col=1, colspan=1)
         self.pressure_plot.setLabel('left', 'y')
         self.pressure_plot.setLabel('bottom', 'x')
+        self.pressure_plot.setVisible(False)  # Hidden by default
 
         # Row 2: Dye (left) | Error metrics (right)
         # Create scalar (dye) plot
@@ -411,11 +416,30 @@ class FlowVisualization:
         padding_x = lx * 0.1
         padding_y = (y_max - y_min) * 0.1
         
-        # Clamp values to prevent overflow
-        x_min = max(-padding_x, -1e10)
-        x_max = min(lx + padding_x, 1e10)
-        y_min_clamped = max(y_min - padding_y, -1e10)
-        y_max_clamped = min(y_max + padding_y, 1e10)
+        # More robust overflow handling with finite value checks
+        def safe_float(value, default=0.0):
+            """Convert to float safely, handling inf/nan"""
+            try:
+                result = float(value)
+                if not np.isfinite(result):
+                    return default
+                return result
+            except (ValueError, TypeError, OverflowError):
+                return default
+        
+        # Safe computation of bounds
+        lx_safe = safe_float(lx, 20.0)
+        y_min_safe = safe_float(y_min, 0.0)
+        y_max_safe = safe_float(y_max, 7.5)
+        padding_x_safe = safe_float(padding_x, 2.0)
+        padding_y_safe = safe_float(padding_y, 0.75)
+        
+        # Clamp values to prevent overflow with tighter bounds
+        MAX_SAFE_VALUE = 1e6  # Much safer than 1e10
+        x_min = max(-padding_x_safe, -MAX_SAFE_VALUE)
+        x_max = min(lx_safe + padding_x_safe, MAX_SAFE_VALUE)
+        y_min_clamped = max(y_min_safe - padding_y_safe, -MAX_SAFE_VALUE)
+        y_max_clamped = min(y_max_safe + padding_y_safe, MAX_SAFE_VALUE)
         
         try:
             self.vel_plot.setXRange(x_min, x_max)
@@ -563,7 +587,7 @@ class FlowVisualization:
         self._configure_performance_settings()
         
         # Initialize obstacle renderer - only if outline items exist
-        if self.vel_outline is not None and self.vort_outline is not None and self.scalar_outline is not None and self.pressure_outline is not None:
+        if self.vel_outline is not None and self.div_outline is not None and self.vort_outline is not None and self.scalar_outline is not None and self.pressure_outline is not None:
             try:
                 self.obstacle_renderer = ObstacleRenderer(self.vel_outline, self.div_outline, self.vort_outline, self.scalar_outline, self.pressure_outline)
             except Exception as e:
@@ -1031,10 +1055,11 @@ class FlowVisualization:
         # CRITICAL FIX: Recreate obstacle renderer only after all items are created
         try:
             if hasattr(self, 'vel_outline') and self.vel_outline is not None and \
+               hasattr(self, 'div_outline') and self.div_outline is not None and \
                hasattr(self, 'vort_outline') and self.vort_outline is not None and \
                hasattr(self, 'scalar_outline') and self.scalar_outline is not None and \
                hasattr(self, 'pressure_outline') and self.pressure_outline is not None:
-                self.obstacle_renderer = ObstacleRenderer(self.vel_outline, self.vort_outline, self.scalar_outline, self.pressure_outline)
+                self.obstacle_renderer = ObstacleRenderer(self.vel_outline, self.div_outline, self.vort_outline, self.scalar_outline, self.pressure_outline)
                 
                 # Update outlines immediately with current solver
                 if hasattr(self, 'solver') and self.solver is not None:
@@ -1063,7 +1088,7 @@ class FlowVisualization:
         self.level_update_counter = 0
         self.level_update_interval = 1  # Update every frame
     
-    def update_visualization(self, vel_mag_data, vort_data, pressure_data=None, div_data=None, show_velocity=True, show_vorticity=True, show_pressure=True, show_dye=True):
+    def update_visualization(self, vel_mag_data, vort_data, pressure_data=None, div_data=None, scalar_data=None, show_velocity=True, show_vorticity=True, show_pressure=True, show_dye=True):
         """Update visualization with new data"""
         import time
         t_start = time.time()
@@ -1184,14 +1209,13 @@ class FlowVisualization:
                 vel_min = float(np.nanmin(vel_display))
                 vel_max = float(np.nanmax(vel_display))
 
-                # Add small padding to avoid extremes at color boundaries
-                vel_range = vel_max - vel_min
-                if vel_range > 0:
-                    vel_min_padded = vel_min - 0.05 * vel_range
-                    vel_max_padded = vel_max + 0.05 * vel_range
+                # Fix minimum to 0 for velocity magnitude to prevent flickering
+                # Only scale the maximum adaptively
+                vel_min_padded = 0.0
+                if vel_max > 0:
+                    vel_max_padded = vel_max * 1.05  # 5% padding
                 else:
-                    vel_min_padded = vel_min
-                    vel_max_padded = vel_max + 1e-6  # Ensure non-zero range
+                    vel_max_padded = 1.0  # Fallback if all zeros
 
                 self.vel_colorbar.setLevels([vel_min_padded, vel_max_padded])  # Update colorbar
                 # Colorbar will automatically update image levels via setImageItem connection
@@ -1300,14 +1324,15 @@ class FlowVisualization:
                 vort_min = float(np.nanmin(vort_display))
                 vort_max = float(np.nanmax(vort_display))
 
-                # Add small padding to avoid extremes at color boundaries
-                vort_range = vort_max - vort_min
-                if vort_range > 0:
-                    vort_min_padded = vort_min - 0.05 * vort_range
-                    vort_max_padded = vort_max + 0.05 * vort_range
+                # Ensure symmetric range around zero to prevent flickering
+                # Use the larger absolute value to create symmetric bounds
+                max_abs = max(abs(vort_min), abs(vort_max))
+                if max_abs > 0:
+                    vort_min_padded = -max_abs * 1.05  # 5% padding
+                    vort_max_padded = max_abs * 1.05
                 else:
-                    vort_min_padded = vort_min
-                    vort_max_padded = vort_max + 1e-6  # Ensure non-zero range
+                    vort_min_padded = -1.0
+                    vort_max_padded = 1.0
 
                 self.vort_colorbar.setLevels([vort_min_padded, vort_max_padded])  # Update colorbar
                 # Colorbar will automatically update image levels via setImageItem connection
@@ -1317,14 +1342,15 @@ class FlowVisualization:
         t_press_start = time.time()
         if show_pressure and self.pressure_img is not None and pressure_data is not None:
             # Check if lid_driven_cavity flow type needs rotation
-            is_lid_driven_cavity = (hasattr(self.solver, 'sim_params') and 
+            is_lid_driven_cavity = (hasattr(self.solver, 'sim_params') and
                                    hasattr(self.solver.sim_params, 'flow_type') and
                                    self.solver.sim_params.flow_type == 'lid_driven_cavity')
-            
+
             # Simulation: pressure_data[nx][ny] where nx=x, ny=y
             # PyQtGraph: image[ny][nx] where rows=y, cols=x
             # For LDC, lid is at top (last y-index in simulation), so don't transpose
-            pressure_data_correct = pressure_data
+            # Convert to numpy array first to avoid JAX shape issues during resize
+            pressure_data_correct = np.array(pressure_data)
 
             # Convert to float32 to prevent levels error
             if pressure_data_correct.dtype != np.float32:
@@ -1355,17 +1381,44 @@ class FlowVisualization:
                 pressure_min = float(np.nanmin(pressure_display))
                 pressure_max = float(np.nanmax(pressure_display))
 
-                # Add small padding to avoid extremes at color boundaries
-                pressure_range = pressure_max - pressure_min
-                if pressure_range > 0:
-                    pressure_min_padded = pressure_min - 0.05 * pressure_range
-                    pressure_max_padded = pressure_max + 0.05 * pressure_range
+                # Ensure symmetric range around zero to prevent flickering
+                # Use the larger absolute value to create symmetric bounds
+                max_abs = max(abs(pressure_min), abs(pressure_max))
+                if max_abs > 0:
+                    pressure_min_padded = -max_abs * 1.05  # 5% padding
+                    pressure_max_padded = max_abs * 1.05
                 else:
-                    pressure_min_padded = pressure_min
-                    pressure_max_padded = pressure_max + 1e-6  # Ensure non-zero range
+                    pressure_min_padded = -1.0
+                    pressure_max_padded = 1.0
 
                 self.pressure_colorbar.setLevels([pressure_min_padded, pressure_max_padded])
         t_press_end = time.time()
+        
+        # Update scalar/dye plot
+        t_scalar_start = time.time()
+        if show_dye and self.scalar_img is not None and scalar_data is not None:
+            # Convert to float32 to prevent levels error
+            scalar_data_correct = scalar_data
+            if scalar_data.dtype != np.float32:
+                scalar_data_correct = scalar_data.astype(np.float32)
+
+            # Use the same rect approach for consistent scaling
+            rect = QRectF(
+                0,                          # x (left) - physical coordinate
+                self.current_y_min,          # y (bottom) - physical coordinate
+                self.current_lx,             # width - PHYSICAL width (lx)
+                self.current_y_max - self.current_y_min  # height - PHYSICAL height (ly)
+            )
+
+            # Upscale for smooth visualization
+            scalar_display = _upscale_for_display(scalar_data_correct, scale_factor=self.upscale_factor)
+
+            # Set image with explicit bounds
+            self.scalar_img.setImage(scalar_display, autoLevels=False, rect=rect)
+            
+            # Update scalar colorbar levels (fixed range for dye: 0 to 1)
+            self.scalar_colorbar.setLevels([0, 1])
+        t_scalar_end = time.time()
         
         # Store visualization timing data for overlay (no console print)
         if not hasattr(self, '_viz_detail_frame_count'):
@@ -2218,9 +2271,20 @@ class FlowVisualization:
                     layout.addItem(vel_item, 0, 0, 1, 2)
     
     def set_pressure_visibility(self, show_pressure=True):
-        """Set visibility of pressure plot"""
+        """Set visibility of pressure plot and adjust vorticity colspan"""
         if self.pressure_plot is not None:
             self.pressure_plot.setVisible(show_pressure)
+        # Adjust vorticity plot colspan based on pressure visibility
+        if self.vort_plot is not None:
+            # Adjust vorticity plot colspan by re-adding to layout with new span
+            layout = self.plot_widget.ci.layout
+            vort_item = layout.itemAt(1, 0)
+            if vort_item is not None:
+                layout.removeItem(vort_item)
+                if show_pressure:
+                    layout.addItem(vort_item, 1, 0, 1, 1)
+                else:
+                    layout.addItem(vort_item, 1, 0, 1, 2)
     
     def set_dye_visibility(self, show_dye=True):
         """Set visibility of dye plot"""

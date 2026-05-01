@@ -19,7 +19,7 @@ class VisualizationConfig:
     # Display settings
     show_velocity: bool = True
     show_vorticity: bool = True
-    show_pressure: bool = True
+    show_pressure: bool = False
     show_dye: bool = True
     default_velocity_colormap: str = 'viridis'
     default_vorticity_colormap: str = 'coolwarm'

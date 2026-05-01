@@ -66,8 +66,42 @@ class FloatingControlBar(QFrame):
         self.reset_btn.setToolTip("Reset")
         row1_layout.addWidget(self.reset_btn)
 
+        # Trace Viewer button
+        self.trace_viewer_btn = QPushButton("🔍")
+        self.trace_viewer_btn.setMaximumWidth(30)
+        self.trace_viewer_btn.setToolTip("Open Trace Viewer")
+        row1_layout.addWidget(self.trace_viewer_btn)
+
         row1_layout.addStretch()
         main_layout.addLayout(row1_layout)
+
+        # Row 1.5: Snapshot recording controls
+        snapshot_layout = QHBoxLayout()
+        snapshot_layout.setSpacing(5)
+
+        self.record_snapshots_cb = QCheckBox("Record Snapshots")
+        self.record_snapshots_cb.setToolTip("Enable snapshot recording for trace viewer")
+        snapshot_layout.addWidget(self.record_snapshots_cb)
+
+        snapshot_layout.addWidget(QLabel("Interval:"))
+        self.snapshot_interval_spin = QSlider(Qt.Orientation.Horizontal)
+        self.snapshot_interval_spin.setRange(1, 100)
+        self.snapshot_interval_spin.setValue(10)
+        self.snapshot_interval_spin.setMaximumWidth(60)
+        self.snapshot_interval_spin.setToolTip("Save every N timesteps")
+        snapshot_layout.addWidget(self.snapshot_interval_spin)
+
+        self.snapshot_interval_label = QLabel("10")
+        self.snapshot_interval_label.setMaximumWidth(20)
+        snapshot_layout.addWidget(self.snapshot_interval_label)
+
+        self.snapshot_dir_btn = QPushButton("📁")
+        self.snapshot_dir_btn.setMaximumWidth(25)
+        self.snapshot_dir_btn.setToolTip("Select snapshot output directory")
+        snapshot_layout.addWidget(self.snapshot_dir_btn)
+
+        snapshot_layout.addStretch()
+        main_layout.addLayout(snapshot_layout)
 
         # Row 2: Plot display checkboxes
         row2_layout = QHBoxLayout()
@@ -93,7 +127,7 @@ class FloatingControlBar(QFrame):
 
         # Pressure toggle
         self.show_pressure_cb = QCheckBox("Press")
-        self.show_pressure_cb.setChecked(True)
+        self.show_pressure_cb.setChecked(False)
         self.show_pressure_cb.setToolTip("Pressure Plot")
         row2_layout.addWidget(self.show_pressure_cb)
 
@@ -121,8 +155,63 @@ class FloatingControlBar(QFrame):
         self.profiling_overlay_cb.setToolTip("Profiling Overlay")
         row2_layout.addWidget(self.profiling_overlay_cb)
 
+        # VK vortex tracking overlay toggle
+        self.vk_overlay_cb = QCheckBox("VK")
+        self.vk_overlay_cb.setChecked(False)
+        self.vk_overlay_cb.setToolTip("Von Kármán Vortex Tracking Overlay")
+        row2_layout.addWidget(self.vk_overlay_cb)
+
         row2_layout.addStretch()
         main_layout.addLayout(row2_layout)
+
+        # Row 2.5: VK x-range sliders
+        vk_range_layout = QHBoxLayout()
+        vk_range_layout.setSpacing(5)
+
+        vk_range_layout.addWidget(QLabel("VK X-range:"))
+        self.vk_x_min_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vk_x_min_slider.setRange(0, 100)
+        self.vk_x_min_slider.setValue(50)  # Default 0.5
+        self.vk_x_min_slider.setMaximumWidth(80)
+        self.vk_x_min_slider.setToolTip("Minimum x for vortex detection (normalized)")
+        vk_range_layout.addWidget(self.vk_x_min_slider)
+
+        self.vk_x_min_label = QLabel("0.5")
+        self.vk_x_min_label.setMaximumWidth(30)
+        vk_range_layout.addWidget(self.vk_x_min_label)
+
+        self.vk_x_max_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vk_x_max_slider.setRange(0, 100)
+        self.vk_x_max_slider.setValue(100)  # Default 1.0
+        self.vk_x_max_slider.setMaximumWidth(80)
+        self.vk_x_max_slider.setToolTip("Maximum x for vortex detection (normalized)")
+        vk_range_layout.addWidget(self.vk_x_max_slider)
+
+        self.vk_x_max_label = QLabel("1.0")
+        self.vk_x_max_label.setMaximumWidth(30)
+        vk_range_layout.addWidget(self.vk_x_max_label)
+
+        vk_range_layout.addStretch()
+        main_layout.addLayout(vk_range_layout)
+
+        # Row 2.75: VK max vortices slider
+        vk_max_layout = QHBoxLayout()
+        vk_max_layout.setSpacing(5)
+
+        vk_max_layout.addWidget(QLabel("Max Vortices:"))
+        self.vk_max_vortices_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vk_max_vortices_slider.setRange(2, 10)
+        self.vk_max_vortices_slider.setValue(2)  # Default 2
+        self.vk_max_vortices_slider.setMaximumWidth(80)
+        self.vk_max_vortices_slider.setToolTip("Maximum number of vortices to track")
+        vk_max_layout.addWidget(self.vk_max_vortices_slider)
+
+        self.vk_max_vortices_label = QLabel("2")
+        self.vk_max_vortices_label.setMaximumWidth(30)
+        vk_max_layout.addWidget(self.vk_max_vortices_label)
+
+        vk_max_layout.addStretch()
+        main_layout.addLayout(vk_max_layout)
 
         # Row 3: Colour scheme dropdowns
         row3_layout = QHBoxLayout()

@@ -7,11 +7,14 @@ import sys
 import time
 import threading
 import queue
+import logging
 import numpy as np
 import jax.numpy as jnp
 import jax
 import multiprocessing.shared_memory as shm
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
+
+logger = logging.getLogger(__name__)
 
 
 class SharedData:
@@ -47,14 +50,14 @@ class MetricsWorker(QObject):
         self.paused = False
         self.thread = threading.Thread(target=self.run_metrics, daemon=True)
         self.thread.start()
-        print("Metrics worker started")
+        logger.info("Metrics worker started")
 
     def stop(self):
         """Stop the metrics computation thread"""
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
-        print("Metrics worker stopped")
+        logger.info("Metrics worker stopped")
 
     def pause(self):
         """Pause the metrics computation"""
@@ -118,9 +121,9 @@ class MetricsWorker(QObject):
                 relative_residual = pressure_residual / (rhs_norm + 1e-10)
                 
                 if iteration < 5 or iteration % 1000 == 0:
-                    print(f"Pressure residual (iter {iteration}): {pressure_residual:.8e}, relative: {relative_residual:.8e}")
+                    logger.debug(f"Pressure residual (iter {iteration}): {pressure_residual:.8e}, relative: {relative_residual:.8e}")
                     if relative_residual > 1e-3:
-                        print(f"WARNING: Relative pressure residual > 1e-3 - solver may not be converging!")
+                        logger.warning(f"Relative pressure residual > 1e-3 - solver may not be converging!")
 
                 # For MAC grid, interpolate velocities to cell centers before computing metrics
                 grid_type = getattr(self.solver.sim_params, 'grid_type', 'collocated')
@@ -281,7 +284,7 @@ class MetricsWorker(QObject):
                             'iteration': iteration
                         }
                     except Exception as e:
-                        print(f"Error computing airfoil metrics: {e}")
+                        logger.error(f"Error computing airfoil metrics: {e}")
                         airfoil_metrics = None
 
                 # Only emit metrics signal when we actually computed metrics (not on skipped frames)
@@ -293,7 +296,7 @@ class MetricsWorker(QObject):
                     self.metrics_ready.emit(metrics_data)
 
             except Exception as e:
-                print(f"Error in metrics computation: {e}")
+                logger.error(f"Error in metrics computation: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -341,9 +344,9 @@ class SimulationWorker(QObject):
                 self.running = True
                 self.thread = threading.Thread(target=self.run_simulation, daemon=True)
                 self.thread.start()
-                print("Simulation thread started")
+                logger.info("Simulation thread started")
         except Exception as e:
-            print(f"ERROR: Failed to start simulation thread: {e}")
+            logger.error(f"Failed to start simulation thread: {e}")
             import traceback
             traceback.print_exc()
             self.running = False
@@ -351,23 +354,29 @@ class SimulationWorker(QObject):
     def run_simulation(self):
         """Main simulation loop in separate thread"""
         step_count = 0
-        print("Starting simulation loop...")
-        
+        logger.info("Starting simulation loop...")
+
         # Track iteration rate directly
         iteration_start_time = time.time()
-        
+
+        # Dynamic airfoil motion state
+        dynamic_aoa_enabled = False
+        dynamic_aoa_direction = 1  # 1 for increasing, -1 for decreasing
+        dynamic_aoa_current = 0.0
+        dynamic_aoa_step_counter = 0
+
         while self.running:
             try:
                 # If paused, wait and continue
                 if self.paused:
                     time.sleep(0.01)
                     continue
-                
+
                 step_count += 1
                 
                 # Check if we should stop (more responsive)
                 if not self.running:
-                    print("Simulation stop requested")
+                    logger.info("Simulation stop requested")
                     break
                 
                 # Run simulation step with coefficient computation for airfoil metrics
@@ -385,13 +394,13 @@ class SimulationWorker(QObject):
                         compute_diagnostics=False  # Metrics computed in separate thread
                     )
                 except Exception as step_error:
-                    print(f"ERROR: Simulation step failed: {step_error}")
+                    logger.error(f"Simulation step failed: {step_error}")
                     import traceback
                     traceback.print_exc()
                     
                     # Check for specific LDC-related errors
                     if "lid_driven_cavity" in str(step_error).lower() or "ldc" in str(step_error).lower():
-                        print("LDC-specific error detected, stopping simulation...")
+                        logger.warning("LDC-specific error detected, stopping simulation...")
                         break
                     
                     time.sleep(0.01)  # Brief pause before retry
@@ -428,7 +437,7 @@ class SimulationWorker(QObject):
                     try:
                         vel_mag = jnp.sqrt(u**2 + v**2)
                     except Exception as vel_error:
-                        print(f"ERROR: Velocity magnitude calculation failed: {vel_error}")
+                        logger.error(f"Velocity magnitude calculation failed: {vel_error}")
                         vel_mag = jnp.zeros_like(u)  # Fallback value
                     vel_mag_display = vel_mag
                 elif grid_type == 'mac':
@@ -455,7 +464,7 @@ class SimulationWorker(QObject):
                     try:
                         vel_mag = jnp.sqrt(u**2 + v**2)
                     except Exception as vel_error:
-                        print(f"ERROR: Velocity magnitude calculation failed: {vel_error}")
+                        logger.error(f"Velocity magnitude calculation failed: {vel_error}")
                         vel_mag = jnp.zeros_like(u)  # Fallback value
                     vel_mag_display = vel_mag
                 t_interp_end = time.time()
@@ -471,6 +480,7 @@ class SimulationWorker(QObject):
                     'vort': np.asarray(vort_display, dtype=np.float32),
                     'vel_mag': np.asarray(vel_mag_display, dtype=np.float32),
                     'div': np.asarray(div, dtype=np.float32) if div is not None else None,
+                    'scalar': np.asarray(self.solver.c, dtype=np.float32) if hasattr(self.solver, 'c') else None,
                 }
                 t_queue_end = time.time()
                 
@@ -480,11 +490,78 @@ class SimulationWorker(QObject):
                     try:
                         self.data_ready.emit(data)
                     except Exception as emit_error:
-                        print(f"ERROR: Signal emission failed: {emit_error}")
+                        logger.error(f"Signal emission failed: {emit_error}")
                         import traceback
                         traceback.print_exc()
                 t_signal_end = time.time()
                 
+                # Dynamic airfoil motion logic
+                if self.control_panel and hasattr(self.control_panel, 'dynamic_airfoil_checkbox'):
+                    # Check if dynamic mode is enabled and obstacle is NACA
+                    is_dynamic = self.control_panel.dynamic_airfoil_checkbox.value() == 1
+                    is_naca = getattr(self.solver.sim_params, 'obstacle_type', '') == 'naca_airfoil'
+
+                    if is_dynamic and is_naca:
+                        # Get parameters from UI
+                        min_aoa = self.control_panel.min_aoa_spinbox.value()
+                        max_aoa = self.control_panel.max_aoa_spinbox.value()
+                        aoa_increment = self.control_panel.aoa_increment_spinbox.value()
+                        steps_per_increment = self.control_panel.steps_per_increment_slider.value()
+
+                        # Initialize on first iteration
+                        if not dynamic_aoa_enabled:
+                            dynamic_aoa_enabled = True
+                            dynamic_aoa_current = min_aoa
+                            dynamic_aoa_direction = 1
+                            dynamic_aoa_step_counter = 0
+                            # Update solver with initial AoA
+                            if hasattr(self.solver, 'update_naca_angle'):
+                                self.solver.update_naca_angle(dynamic_aoa_current, recompute=True)
+
+                        # Increment step counter
+                        dynamic_aoa_step_counter += 1
+
+                        # Check if we should update AoA
+                        if dynamic_aoa_step_counter >= steps_per_increment:
+                            dynamic_aoa_step_counter = 0
+
+                            # Update AoA
+                            dynamic_aoa_current += dynamic_aoa_direction * aoa_increment
+
+                            # Check bounds and reverse direction if needed
+                            if dynamic_aoa_current >= max_aoa:
+                                dynamic_aoa_current = max_aoa
+                                dynamic_aoa_direction = -1
+                            elif dynamic_aoa_current <= min_aoa:
+                                dynamic_aoa_current = min_aoa
+                                dynamic_aoa_direction = 1
+
+                            # Update solver with new AoA
+                            if hasattr(self.solver, 'update_naca_angle'):
+                                self.solver.update_naca_angle(dynamic_aoa_current, recompute=True)
+
+                                # Clear JIT cache and recompile to pick up new mask
+                                import jax
+                                jax.clear_caches()
+                                if hasattr(self.solver, '_jit_cache'):
+                                    self.solver._jit_cache.clear()
+                                if hasattr(self.solver, '_step_jit'):
+                                    delattr(self.solver, '_step_jit')
+                                self.solver._step_jit = self.solver.get_step_jit()
+
+                                # Update UI spinbox to reflect current AoA
+                                if hasattr(self.control_panel, 'angle_spinbox'):
+                                    self.control_panel.angle_spinbox.blockSignals(True)
+                                    self.control_panel.angle_spinbox.setValue(dynamic_aoa_current)
+                                    self.control_panel.angle_spinbox.blockSignals(False)
+                                if hasattr(self.control_panel, 'angle_slider'):
+                                    self.control_panel.angle_slider.blockSignals(True)
+                                    self.control_panel.angle_slider.setValue(int(dynamic_aoa_current * 10))
+                                    self.control_panel.angle_slider.blockSignals(False)
+                    else:
+                        # Dynamic mode disabled, reset state
+                        dynamic_aoa_enabled = False
+
                 # Simulation FPS counter
                 self.sim_fps_counter += 1
                 if time.time() - self.last_sim_fps_time > 1.0:
@@ -496,19 +573,19 @@ class SimulationWorker(QObject):
                         total_ms = (t_signal_end - t_solver_start) * 1000
                         self.profiling_update.emit(solver_ms, interp_ms, total_ms, self.sim_fps_counter)
                     except Exception as fps_error:
-                        print(f"ERROR: FPS update failed: {fps_error}")
+                        logger.error(f"FPS update failed: {fps_error}")
                     self.sim_fps_counter = 0
                     self.last_sim_fps_time = time.time()
                 
             except Exception as e:
                 if not self.running:  # Error during shutdown is OK
                     break
-                print(f"FATAL ERROR: Simulation loop crashed: {e}")
+                logger.critical(f"Simulation loop crashed: {e}")
                 import traceback
                 traceback.print_exc()
                 break  # Exit the loop on fatal error
         
-        print("Simulation thread stopped")
+        logger.info("Simulation thread stopped")
     
     def pause(self):
         """Pause the simulation"""
@@ -534,12 +611,16 @@ class SimulationWorker(QObject):
         }
 
     def stop_simulation(self):
-        """Stop the simulation thread"""
+        """Stop the simulation thread with robust cleanup"""
         self.running = False
+        self.paused = False  # Ensure paused state is cleared
+        
+        # Wait for thread to stop with longer timeout for robustness
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)  # Wait up to 2 seconds
+            self.thread.join(timeout=5.0)  # Wait up to 5 seconds
             if self.thread.is_alive():
-                print("Warning: Simulation thread did not stop gracefully")
+                logger.warning("Simulation thread did not stop gracefully after 5 seconds")
+                # Thread is still alive - this shouldn't happen but we'll continue anyway
 
         # Clean up shared memory
         if hasattr(self, 'shared_buffers'):
@@ -547,17 +628,17 @@ class SimulationWorker(QObject):
                 try:
                     buffer.cleanup()
                 except Exception as e:
-                    print(f"Warning: Buffer cleanup error: {e}")
+                    logger.warning(f"Buffer cleanup error: {e}")
     
     def pause_simulation(self):
         """Pause the simulation without stopping the thread"""
         self.paused = True
-        print("Simulation paused")
+        logger.info("Simulation paused")
     
     def resume_simulation(self):
         """Resume the simulation from paused state"""
         self.paused = False
-        print("Simulation resumed")
+        logger.info("Simulation resumed")
 
 
 class SimulationController:
@@ -596,7 +677,7 @@ class SimulationController:
                     for buffer in self.simulation_worker.shared_buffers.values():
                         buffer.cleanup()
             except Exception as cleanup_error:
-                print(f"Warning: Buffer cleanup error: {cleanup_error}")
+                logger.warning(f"Buffer cleanup error: {cleanup_error}")
             finally:
                 self.simulation_worker = None
         
@@ -635,7 +716,7 @@ class SimulationController:
                             break
                         time.sleep(0.1)
                     if old_worker.thread.is_alive():
-                        print("Warning: Old simulation thread did not stop in 5 seconds")
+                        logger.warning("Old simulation thread did not stop in 5 seconds")
 
                 # Clear reference
                 self.simulation_worker = None
@@ -647,7 +728,7 @@ class SimulationController:
             if self.metrics_worker is None:
                 self.metrics_worker = MetricsWorker(self.solver)
                 self.metrics_worker.start()
-                print("Metrics worker started")
+                logger.info("Metrics worker started")
 
             # Create fresh simulation worker
             self.simulation_worker = SimulationWorker(self.solver, self.control_panel, self.info_panel, self.metrics_worker, self.flow_viz)
@@ -673,10 +754,10 @@ class SimulationController:
             # Start the thread
             self.simulation_worker.start()
 
-            print("Simulation started in separate thread")
+            logger.info("Simulation started in separate thread")
 
         except Exception as e:
-            print(f"Error starting simulation: {e}")
+            logger.error(f"Error starting simulation: {e}")
             import traceback
             traceback.print_exc()
             self.simulation_worker = None
@@ -715,23 +796,23 @@ class SimulationController:
                 self.metrics_worker.metrics_ready.connect(
                     self.callbacks['metrics_ready'], Qt.ConnectionType.QueuedConnection
                 )
-                print("Metrics worker started and signal reconnected")
+                logger.info("Metrics worker started and signal reconnected")
             else:
-                print("Metrics worker started (no callbacks to reconnect)")
+                logger.info("Metrics worker started (no callbacks to reconnect)")
             
             # Update simulation worker's reference to the new metrics worker
             if self.simulation_worker:
                 self.simulation_worker.metrics_worker = self.metrics_worker
-                print("Simulation worker's metrics_worker reference updated")
+                logger.info("Simulation worker's metrics_worker reference updated")
         else:
-            print("Metrics worker already running")
+            logger.info("Metrics worker already running")
 
     def stop_metrics(self):
         """Stop metrics worker"""
         if self.metrics_worker:
             self.metrics_worker.stop()
             self.metrics_worker = None
-            print("Metrics worker stopped")
+            logger.info("Metrics worker stopped")
 
     def stop_simulation(self):
         """Stop the simulation and metrics worker"""
@@ -739,7 +820,7 @@ class SimulationController:
             self.simulation_worker.stop_simulation()
         if self.metrics_worker:
             self.metrics_worker.stop()
-        print("Simulation stopped")
+        logger.info("Simulation stopped")
     
     def pause_simulation(self):
         """Pause simulation without stopping the thread"""
@@ -800,11 +881,11 @@ class RecordingManager:
         if not self.is_recording:
             self.is_recording = True
             self.recorded_frames = []
-            print("Started recording video...")
+            logger.info("Started recording video...")
             return "Stop Recording"
         else:
             self.is_recording = False
-            print(f"Stopped recording. Captured {len(self.recorded_frames)} frames.")
+            logger.info(f"Stopped recording. Captured {len(self.recorded_frames)} frames.")
             return "Record Video"
     
     def capture_frame(self, frame_data):
@@ -821,7 +902,7 @@ class RecordingManager:
     def save_video(self, parent_widget=None):
         """Save recorded frames as video"""
         if not self.recorded_frames:
-            print("No frames to save!")
+            logger.warning("No frames to save!")
             return
             
         try:
@@ -832,13 +913,13 @@ class RecordingManager:
                 parent_widget, "Save Video", "flow_simulation.mp4", "Video Files (*.mp4 *.avi)"
             )
             if filename:
-                print(f"Saving video with {len(self.recorded_frames)} frames...")
+                logger.info(f"Saving video with {len(self.recorded_frames)} frames...")
                 imageio.mimsave(filename, self.recorded_frames, fps=30)
-                print(f"Video saved as {filename}")
+                logger.info(f"Video saved as {filename}")
         except ImportError:
-            print("imageio not installed. Install with: pip install imageio")
+            logger.error("imageio not installed. Install with: pip install imageio")
         except Exception as e:
-            print(f"Error saving video: {e}")
+            logger.error(f"Error saving video: {e}")
     
     def has_frames(self):
         """Check if there are frames to save"""
@@ -884,10 +965,10 @@ class DataExporter:
             # Export grid information
             DataExporter._export_grid_info(solver, timestamp)
             
-            print(f"Data exported successfully with timestamp {timestamp}")
+            logger.info(f"Data exported successfully with timestamp {timestamp}")
             
         except Exception as e:
-            print(f"Error exporting data: {e}")
+            logger.error(f"Error exporting data: {e}")
     
     @staticmethod
     def _export_history_data(history_data, timestamp):
@@ -908,7 +989,7 @@ class DataExporter:
                 np.savetxt(f'history_{timestamp}.csv', history_array, delimiter=',',
                           header='time,enstrophy,drag,lift')
         except Exception as e:
-            print(f"Error exporting history data: {e}")
+            logger.error(f"Error exporting history data: {e}")
     
     @staticmethod
     def _export_grid_info(solver, timestamp):
@@ -934,4 +1015,4 @@ class DataExporter:
             with open(f'grid_info_{timestamp}.json', 'w') as f:
                 json.dump(grid_info, f, indent=2)
         except Exception as e:
-            print(f"Error exporting grid info: {e}")
+            logger.error(f"Error exporting grid info: {e}")

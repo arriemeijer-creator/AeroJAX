@@ -25,6 +25,16 @@ class DisplayManager:
             'vorticity': 0.0,
             'pressure': 0.0
         }
+        
+        # LDC Validation initialization
+        self.ldc_validator = None
+        self.ldc_overlay = None
+        self.ldc_enabled = False
+        
+        # VK Vortex tracking initialization
+        self.vk_validator = None
+        self.vk_overlay = None
+        self.vk_enabled = False
 
         # Get angle of attack from NACA airfoil parameters if available
         if hasattr(self.solver, 'sim_params') and hasattr(self.solver.sim_params, 'naca_angle'):
@@ -351,6 +361,7 @@ class DisplayManager:
             vel_mag_data = data.get('vel_mag')
             vort_data = data.get('vort')
             div_data = data.get('div')
+            scalar_data = data.get('scalar')
             
             # Get visualization data (commented out temporarily)
             # shared_buffers = data.get('shared_buffers', {})
@@ -372,6 +383,7 @@ class DisplayManager:
                     vort_data if vort_data is not None else None,
                     pressure_data,
                     div_data if div_data is not None else None,
+                    scalar_data if scalar_data is not None else None,
                     self.config.viz_config.show_velocity,
                     self.config.viz_config.show_vorticity,
                     self.config.viz_config.show_pressure,
@@ -557,6 +569,81 @@ class DisplayManager:
                 # Continue running even if outline update fails
             t_outline_end = time.time()
                 
+            # Update LDC validation overlay if enabled
+            t_ldc_start = time.time()
+            try:
+                if hasattr(self, 'ldc_enabled') and self.ldc_enabled and self.ldc_validator is not None and self.ldc_overlay is not None:
+                    # Create mock snapshot from current solver state
+                    class MockSnapshot:
+                        def __init__(self, solver):
+                            self.u = np.array(solver.u)
+                            self.v = np.array(solver.v)
+                            self.p = np.array(solver.current_pressure) if hasattr(solver, 'current_pressure') else np.zeros_like(solver.u)
+                            self.mask = np.array(solver.mask) if hasattr(solver, 'mask') else np.ones_like(solver.u)
+                            self.dx = solver.grid.dx
+                            self.dy = solver.grid.dy
+                            self.nx = solver.grid.nx
+                            self.ny = solver.grid.ny
+                            # Handle different solver types (BaselineSolver vs LBMSolver)
+                            if hasattr(solver, 'state') and hasattr(solver.state, 'iteration'):
+                                self.iteration = solver.state.iteration
+                                self.timestamp = solver.state.iteration * solver.dt
+                            elif hasattr(solver, 'iteration'):
+                                self.iteration = solver.iteration
+                                self.timestamp = solver.iteration * solver.dt
+                            else:
+                                self.iteration = 0
+                                self.timestamp = 0.0
+                    
+                    snapshot = MockSnapshot(self.solver)
+                    self.ldc_validator.compute(snapshot)
+                    self.ldc_overlay.update()
+            except Exception as ldc_error:
+                print(f"Warning: LDC validation update failed: {ldc_error}")
+                # Continue running even if LDC validation fails
+            t_ldc_end = time.time()
+            
+            # Update VK vortex tracking overlay if enabled
+            t_vk_start = time.time()
+            try:
+                if hasattr(self, 'vk_enabled') and self.vk_enabled and self.vk_validator is not None and self.vk_overlay is not None:
+                    # Create mock snapshot from current solver state
+                    class MockSnapshot:
+                        def __init__(self, solver):
+                            self.u = np.array(solver.u)
+                            self.v = np.array(solver.v)
+                            self.mask = np.array(solver.mask) if hasattr(solver, 'mask') else np.ones_like(solver.u)
+                            self.dx = solver.grid.dx
+                            self.dy = solver.grid.dy
+                            self.nx = solver.grid.nx
+                            self.ny = solver.grid.ny
+                            # Handle different solver types (BaselineSolver vs LBMSolver)
+                            if hasattr(solver, 'state') and hasattr(solver.state, 'iteration'):
+                                self.iteration = solver.state.iteration
+                                self.timestamp = solver.state.iteration * solver.dt
+                            elif hasattr(solver, 'iteration'):
+                                self.iteration = solver.iteration
+                                self.timestamp = solver.iteration * solver.dt
+                            else:
+                                self.iteration = 0
+                                self.timestamp = 0.0
+                    
+                    snapshot = MockSnapshot(self.solver)
+                    # Get lift coefficient for Strouhal calculation
+                    lift_coeff = None
+                    if hasattr(self.solver, 'history') and 'airfoil_metrics' in self.solver.history:
+                        cl_history = self.solver.history['airfoil_metrics']['CL']
+                        if cl_history:
+                            lift_coeff = cl_history[-1]
+                    result = self.vk_validator.compute(snapshot, lift_coefficient=lift_coeff)
+                    # Get visualization data and pass to overlay
+                    viz_data = self.vk_validator.get_visualization_data(snapshot)
+                    self.vk_overlay.update(viz_data)
+            except Exception as vk_error:
+                print(f"Warning: VK vortex tracking update failed: {vk_error}")
+                # Continue running even if VK tracking fails
+            t_vk_end = time.time()
+                
         except Exception as viz_error:
             print(f"Warning: Visualization update failed: {viz_error}")
             # Continue running even if visualization fails
@@ -627,18 +714,91 @@ class DisplayManager:
         
         if current_time - self.last_fps_update_time >= 1.0:
             fps = self.frame_count / (current_time - self.last_fps_update_time)
+            self.current_viz_fps = fps
             # Use control_panel label for viz FPS
             if hasattr(self, 'control_panel') and self.control_panel is not None:
                 self.control_panel.viz_fps_label.setText(f"Vis FPS: {fps:.1f}")
             elif hasattr(self, 'info_panel') and self.info_panel is not None:
                 self.info_panel.viz_fps_label.setText(f"Vis FPS: {fps:.1f}")
+            # Update plot titles with current FPS
+            if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+                sim_fps = getattr(self, 'current_sim_fps', 0.0)
+                self.flow_viz.update_plot_titles_with_fps(sim_fps, fps)
             
-            # Update plot titles with both sim and viz FPS
-            if hasattr(self, 'flow_viz') and self.flow_viz:
-                self.flow_viz.update_plot_titles_with_fps(self.current_sim_fps, fps)
-            
-            self.frame_count = 0
             self.last_fps_update_time = current_time
+            self.frame_count = 0
+    
+    def enable_ldc_validation(self, re_value: int) -> None:
+        """Enable LDC validation for specified Reynolds number."""
+        try:
+            from validation import LDCValidator, LDCValidationOverlay
+            
+            # Create validator
+            self.ldc_validator = LDCValidator.load(Re=re_value)
+            
+            # Create overlay on velocity plot
+            if hasattr(self, 'flow_viz') and self.flow_viz.vel_plot is not None:
+                self.ldc_overlay = LDCValidationOverlay(self.ldc_validator, self.flow_viz.vel_plot)
+                self.ldc_enabled = True
+                print(f"LDC validation enabled for Re={re_value}")
+            else:
+                print("Warning: Could not create LDC overlay - velocity plot not available")
+                self.ldc_enabled = False
+        except Exception as e:
+            print(f"Error enabling LDC validation: {e}")
+            self.ldc_enabled = False
+    
+    def disable_ldc_validation(self) -> None:
+        """Disable LDC validation and remove overlay."""
+        if hasattr(self, 'ldc_overlay') and self.ldc_overlay is not None:
+            self.ldc_overlay.remove()
+            self.ldc_overlay = None
+        if hasattr(self, 'ldc_validator'):
+            self.ldc_validator = None
+        if hasattr(self, 'ldc_enabled'):
+            self.ldc_enabled = False
+        print("LDC validation disabled")
+    
+    def enable_vk_vortex_tracking(self) -> None:
+        """Enable VK vortex tracking for von Karman flow."""
+        try:
+            from validation import VKStrouhalTracker, VKVortexOverlay
+
+            # Remove existing overlay if present
+            if hasattr(self, 'vk_overlay') and self.vk_overlay is not None:
+                self.vk_overlay.remove()
+                self.vk_overlay = None
+
+            print("DEBUG: Creating VK validator...")
+            # Create validator with default parameters and solver reference
+            self.vk_validator = VKStrouhalTracker.load(solver=self.solver)
+
+            # Create overlay on vorticity plot (better for vortex visualization)
+            print(f"DEBUG: flow_viz exists: {hasattr(self, 'flow_viz')}")
+            print(f"DEBUG: vort_plot exists: {hasattr(self, 'flow_viz') and self.flow_viz.vort_plot is not None}")
+            if hasattr(self, 'flow_viz') and self.flow_viz.vort_plot is not None:
+                self.vk_overlay = VKVortexOverlay(self.flow_viz.vort_plot)
+                self.vk_enabled = True
+                print("VK vortex tracking enabled on vorticity plot")
+            else:
+                print("Warning: Could not create VK overlay - vorticity plot not available")
+                self.vk_enabled = False
+        except Exception as e:
+            print(f"Error enabling VK vortex tracking: {e}")
+            import traceback
+            traceback.print_exc()
+            self.vk_enabled = False
+    
+    def disable_vk_vortex_tracking(self) -> None:
+        """Disable VK vortex tracking and remove overlay."""
+        if hasattr(self, 'vk_overlay') and self.vk_overlay is not None:
+            self.vk_overlay.remove()
+            self.vk_overlay = None
+        if hasattr(self, 'vk_validator'):
+            self.vk_validator = None
+        if hasattr(self, 'vk_enabled'):
+            self.vk_enabled = False
+        print("VK vortex tracking disabled")
     
     def _update_solver_info(self) -> None:
         """Refresh the solver configuration display."""
@@ -749,6 +909,10 @@ class DisplayManager:
         # Also update info_panel label for copy button
         if hasattr(self, 'info_panel') and self.info_panel is not None:
             self.info_panel.sim_fps_label.setText(f"Sim FPS: {fps}")
+        # Update plot titles with FPS
+        if hasattr(self, 'flow_viz') and self.flow_viz is not None:
+            viz_fps = getattr(self, 'current_viz_fps', 0.0)
+            self.flow_viz.update_plot_titles_with_fps(fps, viz_fps)
     
     def handle_profiling_update(self, solver_ms: float, interp_ms: float, total_ms: float, sim_fps: float) -> None:
         """Handle profiling data update and update overlay."""
@@ -763,6 +927,43 @@ class DisplayManager:
         """Toggle profiling overlay visibility."""
         visible = (state == 2)  # Qt.CheckState.Checked
         self.flow_viz.set_profiling_visible(visible)
+
+    def toggle_vk_overlay(self, state: int) -> None:
+        """Toggle VK vortex tracking overlay visibility."""
+        enabled = (state == 2)  # Qt.CheckState.Checked
+        if enabled:
+            # Only enable if not already enabled
+            if not (hasattr(self, 'vk_enabled') and self.vk_enabled):
+                self.enable_vk_vortex_tracking()
+        else:
+            self.disable_vk_vortex_tracking()
+
+    def update_vk_x_range(self) -> None:
+        """Update VK vortex detection x-range from sliders."""
+        if not hasattr(self, 'floating_control_bar'):
+            return
+
+        x_min_norm = self.floating_control_bar.vk_x_min_slider.value() / 100.0
+        x_max_norm = self.floating_control_bar.vk_x_max_slider.value() / 100.0
+        max_vortices = self.floating_control_bar.vk_max_vortices_slider.value()
+
+        # Update labels
+        self.floating_control_bar.vk_x_min_label.setText(f"{x_min_norm:.2f}")
+        self.floating_control_bar.vk_x_max_label.setText(f"{x_max_norm:.2f}")
+        self.floating_control_bar.vk_max_vortices_label.setText(f"{max_vortices}")
+
+        # Update validator parameters
+        if hasattr(self, 'vk_validator') and self.vk_validator is not None:
+            self.vk_validator.wake_x_min = x_min_norm
+            self.vk_validator.wake_x_max = x_max_norm
+            self.vk_validator.max_vortices_to_track = max_vortices
+            # Immediately prune tracked vortices to new limit
+            self.vk_validator.prune_tracked_vortices()
+
+        # Update overlay boundary lines and max vortices
+        if hasattr(self, 'vk_overlay') and self.vk_overlay is not None:
+            self.vk_overlay.update_boundary_lines(x_min_norm, x_max_norm)
+            self.vk_overlay.set_max_vortices(max_vortices)
     
     def handle_metrics_data(self, metrics_data: Dict[str, Any]) -> None:
         """Process metrics data from the separate metrics thread."""
@@ -894,9 +1095,4 @@ class DisplayManager:
                     self.sim_controller.stop_simulation()
                     return
                 
-                # Regular debugging every 10 iterations
-                if iteration % 10 == 0:
-                    u_mean = float(np.mean(u_data))
-                    v_mean = float(np.mean(v_data))
-                    print(f"DEBUG LDC Iter {iteration}: u_max={u_max:.6f}, v_max={v_max:.6f}, u_mean={u_mean:.6f}, v_mean={v_mean:.6f}")
         self.sim_controller.on_simulation_data_ready(data)

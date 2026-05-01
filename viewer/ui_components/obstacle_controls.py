@@ -142,6 +142,76 @@ class ObstacleControls(CollapsibleGroupBox):
         apply_row.addStretch()
         naca_layout.addLayout(apply_row)
 
+        # Row 4: Dynamic airfoil motion controls
+        dynamic_row = QHBoxLayout()
+        self.dynamic_airfoil_checkbox = QSlider(Qt.Orientation.Horizontal)
+        self.dynamic_airfoil_checkbox.setRange(0, 1)
+        self.dynamic_airfoil_checkbox.setValue(0)
+        self.dynamic_airfoil_checkbox.setMaximumWidth(40)
+        self.dynamic_airfoil_checkbox.setToolTip("Enable dynamic airfoil motion")
+        dynamic_row.addWidget(QLabel("Dynamic:"))
+        dynamic_row.addWidget(self.dynamic_airfoil_checkbox)
+        dynamic_row.addStretch()
+        naca_layout.addLayout(dynamic_row)
+
+        # Row 5: Min AoA
+        min_aoa_row = QHBoxLayout()
+        min_aoa_row.addWidget(QLabel("Min AoA:"))
+        self.min_aoa_spinbox = QDoubleSpinBox()
+        self.min_aoa_spinbox.setRange(-20.0, 20.0)
+        self.min_aoa_spinbox.setValue(-10.0)
+        self.min_aoa_spinbox.setDecimals(1)
+        self.min_aoa_spinbox.setSingleStep(1.0)
+        self.min_aoa_spinbox.setMaximumWidth(80)
+        min_aoa_row.addWidget(self.min_aoa_spinbox)
+        min_aoa_row.addStretch()
+        naca_layout.addLayout(min_aoa_row)
+
+        # Row 6: Max AoA
+        max_aoa_row = QHBoxLayout()
+        max_aoa_row.addWidget(QLabel("Max AoA:"))
+        self.max_aoa_spinbox = QDoubleSpinBox()
+        self.max_aoa_spinbox.setRange(-20.0, 20.0)
+        self.max_aoa_spinbox.setValue(10.0)
+        self.max_aoa_spinbox.setDecimals(1)
+        self.max_aoa_spinbox.setSingleStep(1.0)
+        self.max_aoa_spinbox.setMaximumWidth(80)
+        max_aoa_row.addWidget(self.max_aoa_spinbox)
+        max_aoa_row.addStretch()
+        naca_layout.addLayout(max_aoa_row)
+
+        # Row 7: AoA increment
+        aoa_increment_row = QHBoxLayout()
+        aoa_increment_row.addWidget(QLabel("AoA Step:"))
+        self.aoa_increment_spinbox = QDoubleSpinBox()
+        self.aoa_increment_spinbox.setRange(0.1, 5.0)
+        self.aoa_increment_spinbox.setValue(1.0)
+        self.aoa_increment_spinbox.setDecimals(1)
+        self.aoa_increment_spinbox.setSingleStep(0.1)
+        self.aoa_increment_spinbox.setMaximumWidth(80)
+        aoa_increment_row.addWidget(self.aoa_increment_spinbox)
+        aoa_increment_row.addStretch()
+        naca_layout.addLayout(aoa_increment_row)
+
+        # Row 8: Steps per increment
+        steps_row = QHBoxLayout()
+        steps_row.addWidget(QLabel("Steps:"))
+        self.steps_per_increment_slider = QSlider(Qt.Orientation.Horizontal)
+        self.steps_per_increment_slider.setRange(10, 500)
+        self.steps_per_increment_slider.setValue(100)
+        self.steps_per_increment_slider.setMaximumWidth(120)
+        self.steps_label = QLabel("100")
+        self.steps_label.setMinimumWidth(40)
+        steps_row.addWidget(self.steps_per_increment_slider)
+        steps_row.addWidget(self.steps_label)
+        steps_row.addStretch()
+        naca_layout.addLayout(steps_row)
+
+        # Connect steps slider to update label
+        self.steps_per_increment_slider.valueChanged.connect(
+            lambda v: self.steps_label.setText(str(v))
+        )
+
         self.naca_widget.setVisible(True)
         layout.addWidget(self.naca_widget)
 
