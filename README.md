@@ -5,7 +5,7 @@
 <div align="center">
 
 [![JAX](https://img.shields.io/badge/JAX-0.9.2-9cf)]
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19857239.svg)](https://doi.org/10.5281/zenodo.19857239)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19857238.svg)](https://doi.org/10.5281/zenodo.19857238)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.8.1-41cd52)]
 [![License](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)]
 
