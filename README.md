@@ -46,7 +46,15 @@ cd AeroJAX
 pip install -r requirements.txt
 python main.py
 ```
+### Requirements
 
+Python 3.11+
+
+> Optional NVIDIA Hardware Acceleration
+> ```bash
+>python -m pip install --upgrade "jax[cuda12]" #For CUDA 12
+>python -m pip install --upgrade "jax[cuda13]" #For CUDA 13
+>```
 ## The GUI
 
 <div align="center">
