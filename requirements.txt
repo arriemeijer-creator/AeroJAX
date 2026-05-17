@@ -3,8 +3,8 @@
 # Install with: pip install -r requirements.txt
 
 # Core JAX dependencies
-jax>=0.4.0
-jaxlib>=0.4.0
+jax>=0.9.0
+jaxlib>=0.9.0
 
 # Numerical computing
 numpy>=1.24.0
